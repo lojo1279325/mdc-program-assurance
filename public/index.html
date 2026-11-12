@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>MDC Program Assurance</title>
+    <style>
+      body { margin: 0; background: #f4f5f7; color: #1c2430; font-family: "Source Sans 3", "Segoe UI", sans-serif; }
+      main { max-width: 40rem; margin: 2.5rem auto; background: #fff; border: 1px solid #e4e7ec; border-radius: 8px; padding: 1.5rem; }
+      h1 { color: #01244A; font-size: 22px; margin: 0.4rem 0; }
+      p, li { font-size: 16px; line-height: 1.5; }
+      .muted { color: #3d4756; }
+      a.button, button { display: inline-block; background: #01244A; color: #fff; border: 0; border-radius: 6px; padding: 0.5rem 0.75rem; text-decoration: none; font-size: 16px; }
+      .error { background: #fdecef; color: #8f1d32; padding: 0.5rem 0.75rem; border-radius: 6px; }
+      form { display: grid; gap: 0.5rem; margin-top: 1rem; }
+      input, select { border: 1px solid #d5dae2; border-radius: 6px; padding: 0.4rem 0.5rem; font-size: 16px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="muted">Alvarez & Marsal</p>
+      <h1>MDC Program Assurance</h1>
+      <p class="muted">Privileged and confidential</p>
+      <p>This page starts sign-in. The workbench stays closed until Google confirms the account and an administrator has granted a role for this environment.</p>
+      <p class="muted">Only blackengtech.com and alvarezandmarsal.com can reach the private records. A matching domain does not grant a role. Development, test, and production are separate.</p>
+      <p id="status" class="muted">Checking the sign-in service.</p>
+      <p id="error" class="error" hidden></p>
+      <div id="actions"></div>
+    </main>
+    <script>
+      const errors = {
+        domain: "This account is not on blackengtech.com or alvarezandmarsal.com. The workbench did not open.",
+        signin: "Sign-in did not complete. No role was granted."
+      };
+      const params = new URLSearchParams(location.search);
+      if (errors[params.get("error")]) {
+        const error = document.querySelector("#error");
+        error.hidden = false;
+        error.textContent = errors[params.get("error")];
+      }
+      fetch("/api/session", { credentials: "include", cache: "no-store" })
+        .then((response) => response.json())
+        .then((session) => {
+          const status = document.querySelector("#status");
+          const actions = document.querySelector("#actions");
+          status.textContent = "Environment: " + session.environment + ". Database: " + session.database + ".";
+          if (session.state === "granted") {
+            actions.innerHTML = "<p>Your role for this environment is " + session.role + ".</p>";
+            return fetch("/api/items", { credentials: "include" }).then((response) => response.json()).then((body) => {
+              const count = Array.isArray(body.items) ? body.items.length : 0;
+              actions.insertAdjacentHTML("beforeend", "<p>" + count + " records are stored for this environment. This public project does not contain the client register.</p>");
+            });
+          }
+          if (session.state === "pending") {
+            actions.innerHTML = "<p>" + session.email + " is recognized. An administrator has not granted a role for the " + session.environment + " environment.</p>";
+          }
+          actions.insertAdjacentHTML("beforeend", session.providers.google
+            ? '<a class="button" href="/api/auth/google/start">Sign in with Google</a>'
+            : "<p>Google sign-in is not connected yet.</p>");
+        })
+        .catch(() => {
+          document.querySelector("#status").textContent = "The sign-in service did not respond.";
+        });
+    </script>
+  </body>
+</html>
