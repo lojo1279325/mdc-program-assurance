@@ -61,6 +61,7 @@ export function blankReview(input = {}) {
 
 export function methodChecklist() {
   return [
+    blankReview({ code: "R-07", title: "Purpose of the review", layer: "Identification", stage: "Why", ownerRole: "nstt", reviewerRole: "cpi" }),
     blankReview({ code: "R-01", title: "Legal entity and supply role", layer: "Identification", stage: "Who", ownerRole: "nstt", reviewerRole: "cpi" }),
     blankReview({ code: "R-02", title: "Part significance", layer: "Part significance", stage: "What", ownerRole: "nstt", reviewerRole: "cpi" }),
     blankReview({ code: "R-03", title: "Supply continuity", layer: "Supply-chain resilience", stage: "When", ownerRole: "cpi", reviewerRole: "nstt" }),
@@ -138,6 +139,17 @@ export function scorecard(items) {
     `${count.missingLifecycle} records still need a future policy and lifecycle note.`,
   ];
   return { count, sentences };
+}
+
+export function actionList(items) {
+  const actions = [];
+  for (const item of items.map(normalizeReview)) {
+    if (!item.lifecycle) actions.push({ code: item.code, owner: "nstt", text: `${item.code} still needs a future policy and lifecycle note before it can be approved.` });
+    if (!item.evidence) actions.push({ code: item.code, owner: item.ownerRole, text: `${item.code} is missing a fact. Confidence stays pending. The risk band does not change.` });
+    if (item.action === "Do not proceed absent resolution") actions.push({ code: item.code, owner: item.ownerRole, text: `${item.code} should not proceed until the open fact is resolved.` });
+    if (item.status !== "Approved" && item.action && item.lifecycle && item.evidence) actions.push({ code: item.code, owner: item.reviewerRole, text: `${item.code} is ready for a different role to review.` });
+  }
+  return actions;
 }
 
 export function nextCode(items) {
