@@ -86,9 +86,15 @@ export function blankReview(input = {}) {
     confidenceScore: clip(input.confidenceScore, 40),
     sourceCategory: clip(input.sourceCategory, 80),
     sourceStatus: clip(input.sourceStatus, 240),
+    projectId: cleanProjectId(input.projectId),
     changeNote: clip(input.changeNote, 300),
     updates: Array.isArray(input.updates) ? input.updates.slice(-12).map(cleanUpdate) : [],
   };
+}
+
+export function cleanProjectId(value) {
+  const code = String(value || "MDC").trim().toUpperCase();
+  return /^[A-Z][A-Z0-9]{1,11}$/.test(code) ? code : "MDC";
 }
 
 export function methodChecklist() {

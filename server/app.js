@@ -8,7 +8,9 @@ import {
   isAllowedDomain,
 } from "./policy.js";
 import { cleanEmail, openStore, validEnvironment, validRole } from "./store.js";
-import { approvalBlock, applyImportRow, normalizeReview, validRecordCode } from "../public/rules.js";
+import { approvalBlock, applyImportRow, cleanProjectId, normalizeReview, validRecordCode } from "../public/rules.js";
+import { BUILT_IN_PROJECT, validNewProjectCode, vendorKey } from "../public/boards.js";
+import { lookupSources, sourceStatus } from "./sources.js";
 import { rowsFromWorkbook, workbookFromRows } from "./sheet.js";
 
 const store = openStore();
@@ -415,6 +417,138 @@ export function createApp() {
       snapshot: JSON.stringify(restored),
     });
     res.json(restored);
+  });
+
+  app.get("/api/projects", async (req, res) => {
+    const actor = await grantedActor(req);
+    if (actor.error) {
+      res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    const saved = await store.listProjects(actor.environment);
+    res.json({ projects: [BUILT_IN_PROJECT, ...saved.filter((project) => project.code !== "MDC")] });
+  });
+
+  app.post("/api/projects", async (req, res) => {
+    const actor = await grantedActor(req);
+    if (actor.error) {
+      res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    const code = String(req.body?.code || "").trim().toUpperCase();
+    const name = String(req.body?.name || "").trim().slice(0, 120);
+    if (!validNewProjectCode(code) || name.length < 2) {
+      res.status(400).json({ message: "Use a short project code and a name. MDC is reserved for the current register." });
+      return;
+    }
+    const saved = await store.saveProject({
+      environment: actor.environment,
+      code,
+      name,
+      status: "Active",
+      ownerEmail: actor.session.email,
+      note: String(req.body?.note || "").slice(0, 500),
+      createdBy: actor.session.email,
+    });
+    if (!saved) {
+      res.status(409).json({ message: "That project code already exists." });
+      return;
+    }
+    res.json(saved);
+  });
+
+  app.get("/api/library", async (req, res) => {
+    const actor = await grantedActor(req);
+    if (actor.error) {
+      res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    const [vendors, parts] = await Promise.all([
+      store.listVendors(actor.environment),
+      store.listParts(actor.environment),
+    ]);
+    res.json({ vendors, parts });
+  });
+
+  app.post("/api/library/vendors", async (req, res) => {
+    const actor = await grantedActor(req);
+    if (actor.error) {
+      res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    const name = String(req.body?.name || "").trim().slice(0, 300);
+    if (name.length < 2) {
+      res.status(400).json({ message: "Enter the vendor name before saving it." });
+      return;
+    }
+    res.json(await store.saveVendor({
+      environment: actor.environment,
+      name,
+      nameKey: vendorKey(name),
+      country: String(req.body?.country || "").slice(0, 80),
+      identifier: String(req.body?.identifier || "").slice(0, 80),
+      note: String(req.body?.note || "").slice(0, 500),
+    }));
+  });
+
+  app.post("/api/library/parts", async (req, res) => {
+    const actor = await grantedActor(req);
+    if (actor.error) {
+      res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    const code = String(req.body?.code || "").trim().toUpperCase().slice(0, 40);
+    const name = String(req.body?.name || "").trim().slice(0, 200);
+    if (!/^[A-Z0-9][A-Z0-9-]{0,39}$/.test(code) || name.length < 2) {
+      res.status(400).json({ message: "Enter a part code and a part name." });
+      return;
+    }
+    res.json(await store.savePart({
+      environment: actor.environment,
+      code,
+      name,
+      drawing: String(req.body?.drawing || "").slice(0, 120),
+      vendorName: String(req.body?.vendorName || "").slice(0, 300),
+      note: String(req.body?.note || "").slice(0, 500),
+    }));
+  });
+
+  app.get("/api/sources/status", async (req, res) => {
+    const actor = await grantedActor(req);
+    if (actor.error) {
+      res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    res.json(sourceStatus());
+  });
+
+  app.post("/api/sources/lookup", async (req, res) => {
+    const actor = await grantedActor(req);
+    if (actor.error) {
+      res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    const name = String(req.body?.name || "").trim().slice(0, 200);
+    if (name.length < 2) {
+      res.status(400).json({ message: "Enter at least two characters before checking sources." });
+      return;
+    }
+    const kind = req.body?.kind === "part" ? "part" : "vendor";
+    const subjectKey = `${kind}:${kind === "part" ? name.toUpperCase() : vendorKey(name)}`.slice(0, 180);
+    const lookup = await lookupSources({ name, country: String(req.body?.country || "").slice(0, 80) });
+    const saved = [];
+    for (const result of lookup.results) {
+      saved.push(await store.saveLookup({
+        environment: actor.environment,
+        subjectKey,
+        source: result.source,
+        observedAt: result.observedAt,
+        status: result.status,
+        summary: result.summary,
+        payload: JSON.stringify(result.payload || {}).slice(0, 4000),
+      }));
+    }
+    res.json({ ...lookup, subjectKey, projectId: cleanProjectId(req.body?.projectId), saved: saved.map(({ payload, ...row }) => row) });
   });
 
   app.get("/api/access/grants", async (req, res) => {

@@ -18,6 +18,13 @@
         <nav aria-label="Workbench">
           <button type="button" data-view="queue" class="nav on" id="nav-queue">Queue</button>
           <button type="button" data-view="cards" class="nav" id="nav-cards">Review cards</button>
+          <button type="button" data-view="workflow" class="nav" id="nav-workflow">Workflow</button>
+          <button type="button" data-view="completion" class="nav" id="nav-completion">Completion</button>
+          <button type="button" data-view="mine" class="nav" id="nav-mine">My work</button>
+          <button type="button" data-view="owner" class="nav" id="nav-owner">Owner</button>
+          <button type="button" data-view="library" class="nav" id="nav-library">Library</button>
+          <button type="button" data-view="sources" class="nav" id="nav-sources">Sources</button>
+          <button type="button" data-view="projects" class="nav" id="nav-projects">Projects</button>
           <button type="button" data-view="metrics" class="nav" id="nav-metrics">Metrics</button>
           <button type="button" data-view="outputs" class="nav" id="nav-outputs">Outputs</button>
           <button type="button" data-view="duties" class="nav" id="nav-duties">Duties</button>
@@ -36,6 +43,9 @@
             <p id="notice" class="quiet">Loading the development workspace.</p>
           </div>
           <div class="top-actions">
+            <label class="search">Project
+              <select id="project"></select>
+            </label>
             <label class="search">Search
               <input id="search" type="search" placeholder="Title or code" />
             </label>
