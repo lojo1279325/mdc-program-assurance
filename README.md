@@ -8,6 +8,8 @@ This repository does not contain the client register. That record stays in the p
 
 The three environments are development, test, and production. Each environment has its own database. Do not point more than one environment at the same `DATABASE_URL`.
 
+Development work stays on the `development` branch. That branch does not deploy to production. Production stays on `main`.
+
 Set these values in the host for that environment, not in this repository:
 
 - `APP_ENV` is `development`, `test`, or `production`.
