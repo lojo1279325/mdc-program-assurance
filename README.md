@@ -10,6 +10,8 @@ The three environments are development, test, and production. Each environment h
 
 Development work stays on the `development` branch. That branch does not deploy to production. Production stays on `main`.
 
+The development workspace is at `/workbench.html`. It keeps the review queue, separation of duties, review cards, metrics, and the generated register. Team input updates those outputs. The client register is not in this repository. A granted role is required before a record is stored.
+
 Set these values in the host for that environment, not in this repository:
 
 - `APP_ENV` is `development`, `test`, or `production`.

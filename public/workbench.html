@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>MDC Program Assurance Workbench</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/workbench.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="rail">
+        <p class="brand">MDC Program Assurance Workbench</p>
+        <p class="quiet" id="env-label">Development</p>
+        <nav aria-label="Workbench">
+          <button type="button" data-view="queue" class="nav on" id="nav-queue">Queue</button>
+          <button type="button" data-view="cards" class="nav" id="nav-cards">Review cards</button>
+          <button type="button" data-view="metrics" class="nav" id="nav-metrics">Metrics</button>
+          <button type="button" data-view="outputs" class="nav" id="nav-outputs">Outputs</button>
+          <button type="button" data-view="duties" class="nav" id="nav-duties">Duties</button>
+        </nav>
+        <div class="rail-foot">
+          <button type="button" id="add-record">New review</button>
+          <button type="button" id="load-method" class="ghost">Start method checklist</button>
+          <a href="/">Sign-in page</a>
+        </div>
+      </aside>
+      <section class="workspace">
+        <header class="top">
+          <div>
+            <h1 id="view-title">Queue</h1>
+            <p id="notice" class="quiet">Loading the development workspace.</p>
+          </div>
+          <div class="top-actions">
+            <label class="search">Search
+              <input id="search" type="search" placeholder="Title or code" />
+            </label>
+            <button type="button" id="client-toggle" class="ghost">Client view</button>
+          </div>
+        </header>
+        <main id="main"></main>
+      </section>
+    </div>
+    <script type="module" src="/workbench.js"></script>
+  </body>
+</html>

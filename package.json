@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
-    "check": "node --check server/app.js && node --check server/index.js && node --check api/index.js && node --test server/policy.test.js"
+    "check": "node --check server/app.js && node --check server/index.js && node --check api/index.js && node --check public/workbench.js && node --test server/policy.test.js server/workflow.test.js"
   },
   "dependencies": {
     "express": "^5.1.0",

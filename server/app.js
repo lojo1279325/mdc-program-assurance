@@ -8,6 +8,7 @@ import {
   isAllowedDomain,
 } from "./policy.js";
 import { cleanEmail, openStore, validEnvironment, validRole } from "./store.js";
+import { approvalBlock, normalizeReview } from "../public/rules.js";
 
 const store = openStore();
 
@@ -187,6 +188,74 @@ export function createApp() {
       return;
     }
     res.json(await store.grant({ email, role, environment, grantedBy: session.email }));
+  });
+
+  function parseReview(row) {
+    if (!row || row.kind !== "review") return null;
+    try {
+      const parsed = JSON.parse(row.note || "");
+      if (!parsed || typeof parsed !== "object") return null;
+      return normalizeReview({ ...parsed, code: row.code });
+    } catch {
+      return null;
+    }
+  }
+
+  async function grantedActor(req) {
+    const session = await sessionFrom(req);
+    const environment = currentEnvironment();
+    const grant = session ? await store.activeGrant(session.email, environment) : null;
+    const decision = decideAccess({
+      email: session?.email || "",
+      emailVerified: Boolean(session),
+      grantRole: grant?.role || null,
+      grantRevoked: Boolean(grant?.revoked_at),
+    });
+    if (!session) return { error: 401, message: "Sign-in is required." };
+    if (decision !== "granted") return { error: 403, message: "An administrator has not granted a role for this environment." };
+    return { session, grant, environment };
+  }
+
+  app.get("/api/workbench", async (req, res) => {
+    const actor = await grantedActor(req);
+    if (actor.error) {
+      res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    const rows = await store.listItems(actor.environment);
+    res.json({ environment: actor.environment, items: rows.map(parseReview).filter(Boolean) });
+  });
+
+  app.post("/api/workbench/items", async (req, res) => {
+    const actor = await grantedActor(req);
+    if (actor.error) {
+      res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    const code = String(req.body?.code || "").trim();
+    if (!/^[A-Z]-\d{2,4}$/.test(code)) {
+      res.status(400).json({ message: "The record was not saved." });
+      return;
+    }
+    const existing = parseReview((await store.listItems(actor.environment)).find((row) => row.code === code));
+    const record = normalizeReview({ ...req.body, code, kind: "review" });
+    record.preparedBy = existing?.preparedBy || actor.session.email;
+    if (record.status === "Approved") {
+      record.reviewedBy = actor.session.email;
+      const block = approvalBlock({ email: actor.session.email, role: actor.grant.role }, record);
+      if (block) {
+        res.status(400).json({ message: block });
+        return;
+      }
+    }
+    const saved = await store.saveItem({
+      code,
+      kind: "review",
+      status: record.status,
+      note: JSON.stringify(record),
+      environment: actor.environment,
+    });
+    res.json(parseReview(saved) || record);
   });
 
   app.get("/api/access/grants", async (req, res) => {

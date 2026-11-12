@@ -51,8 +51,14 @@
             ? "This is the development environment. Work here does not change production."
             : "Environment: " + session.environment + ".";
           status.textContent = "Database: " + session.database + ".";
+          if (session.environment === "development") {
+            actions.insertAdjacentHTML("beforeend", "<p><a class=\"button\" href=\"/workbench.html\">Open the development workspace</a></p>");
+          }
           if (session.state === "granted") {
             actions.innerHTML = "<p>Your role for this environment is " + session.role + ".</p>";
+            if (session.environment === "development") {
+              actions.insertAdjacentHTML("beforeend", "<p><a class=\"button\" href=\"/workbench.html\">Open the development workspace</a></p>");
+            }
             return fetch("/api/items", { credentials: "include" }).then((response) => response.json()).then((body) => {
               const count = Array.isArray(body.items) ? body.items.length : 0;
               actions.insertAdjacentHTML("beforeend", "<p>" + count + " records are stored for this environment. This public project does not contain the client register.</p>");
