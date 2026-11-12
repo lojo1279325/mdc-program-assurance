@@ -8,7 +8,8 @@ import {
   isAllowedDomain,
 } from "./policy.js";
 import { cleanEmail, openStore, validEnvironment, validRole } from "./store.js";
-import { approvalBlock, normalizeReview } from "../public/rules.js";
+import { approvalBlock, applyImportRow, normalizeReview, validRecordCode } from "../public/rules.js";
+import { rowsFromWorkbook, workbookFromRows } from "./sheet.js";
 
 const store = openStore();
 
@@ -48,7 +49,7 @@ async function sessionFrom(req) {
 
 export function createApp() {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: "3mb" }));
 
   app.get("/api/health", (_req, res) => {
     res.json({
@@ -162,7 +163,7 @@ export function createApp() {
     const code = String(req.body?.code || "").trim();
     const status = String(req.body?.status || "Open").trim();
     const note = String(req.body?.note || "");
-    if (!/^[A-Z]-\d{2}$/.test(code) || status.length > 40 || note.length > 2000) {
+    if (!validRecordCode(code) || status.length > 40 || note.length > 8000) {
       res.status(400).json({ message: "The record was not saved." });
       return;
     }
@@ -232,14 +233,21 @@ export function createApp() {
       res.status(actor.error).json({ message: actor.message });
       return;
     }
-    const code = String(req.body?.code || "").trim();
-    if (!/^[A-Z]-\d{2,4}$/.test(code)) {
+    const code = String(req.body?.code || "").trim().toUpperCase();
+    if (!validRecordCode(code)) {
       res.status(400).json({ message: "The record was not saved." });
       return;
     }
     const existing = parseReview((await store.listItems(actor.environment)).find((row) => row.code === code));
+    const latest = await store.latestVersion(code, actor.environment);
+    const expected = Number(req.body?.version || 0);
+    if (latest && expected !== latest) {
+      res.status(409).json({ message: `This record is now version ${latest}. Reload before saving.` });
+      return;
+    }
     const record = normalizeReview({ ...req.body, code, kind: "review" });
     record.preparedBy = existing?.preparedBy || actor.session.email;
+    record.version = Math.max(latest, expected) + 1;
     if (record.status === "Approved") {
       record.reviewedBy = actor.session.email;
       const block = approvalBlock({ email: actor.session.email, role: actor.grant.role }, record);
@@ -255,7 +263,158 @@ export function createApp() {
       note: JSON.stringify(record),
       environment: actor.environment,
     });
+    await store.appendVersion({
+      code,
+      environment: actor.environment,
+      version: record.version,
+      savedBy: actor.session.email,
+      changeNote: record.changeNote || "Saved from the workbench.",
+      snapshot: JSON.stringify(record),
+    });
     res.json(parseReview(saved) || record);
+  });
+
+  app.post("/api/workbench/import", async (req, res) => {
+    const actor = await grantedActor(req);
+    if (actor.error) {
+      res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows.slice(0, 40) : [];
+    if (!rows.length) {
+      res.status(400).json({ message: "The import file has no register rows." });
+      return;
+    }
+    const current = new Map((await store.listItems(actor.environment)).map((row) => [row.code, parseReview(row)]).filter((entry) => entry[1]));
+    const results = [];
+    let applied = 0;
+    let unchanged = 0;
+    let rejected = 0;
+    const batchId = randomBytes(8).toString("hex");
+    for (const row of rows) {
+      const outcome = applyImportRow(current.get(String(row.code || "").trim().toUpperCase()), row, actor.session.email);
+      if (outcome.result === "rejected") {
+        rejected += 1;
+        results.push({ code: outcome.code, result: outcome.result, message: outcome.message });
+        continue;
+      }
+      if (outcome.result === "unchanged") {
+        unchanged += 1;
+        results.push({ code: outcome.code, result: outcome.result, version: outcome.record.version, message: outcome.message });
+        continue;
+      }
+      await store.saveItem({
+        code: outcome.record.code,
+        kind: "review",
+        status: outcome.record.status,
+        note: JSON.stringify(outcome.record),
+        environment: actor.environment,
+      });
+      await store.appendVersion({
+        code: outcome.record.code,
+        environment: actor.environment,
+        version: outcome.record.version,
+        savedBy: actor.session.email,
+        changeNote: outcome.message,
+        batchId,
+        snapshot: JSON.stringify(outcome.record),
+      });
+      current.set(outcome.record.code, outcome.record);
+      applied += 1;
+      results.push({ code: outcome.code, result: outcome.result, version: outcome.record.version, message: outcome.message });
+    }
+    await store.saveBatch({
+      environment: actor.environment,
+      createdBy: actor.session.email,
+      label: String(req.body?.label || "Register import").slice(0, 120),
+      applied,
+      unchanged,
+      rejected,
+    });
+    res.json({ applied, unchanged, rejected, results });
+  });
+
+  app.post("/api/workbench/parse", async (req, res) => {
+    const actor = await grantedActor(req);
+    if (actor.error) {
+      res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    const file = String(req.body?.file || "");
+    if (!file) {
+      res.status(400).json({ message: "Choose the register workbook before importing." });
+      return;
+    }
+    try {
+      const rows = rowsFromWorkbook(Buffer.from(file, "base64"));
+      res.json({ rows: rows.slice(0, 1000) });
+    } catch {
+      res.status(400).json({ message: "The workbook could not be read. Use the Register sheet from an export." });
+    }
+  });
+
+  app.get("/api/workbench/export", async (req, res) => {
+    const actor = await grantedActor(req);
+    if (actor.error) {
+      res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    const items = (await store.listItems(actor.environment)).map(parseReview).filter(Boolean);
+    const file = workbookFromRows(items);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", "attachment; filename=\"MDC_Program_Assurance_Register.xlsx\"");
+    res.send(file);
+  });
+
+  app.get("/api/workbench/versions", async (req, res) => {
+    const actor = await grantedActor(req);
+    if (actor.error) {
+      res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    const code = String(req.query.code || "").trim().toUpperCase();
+    if (!validRecordCode(code)) {
+      res.status(400).json({ message: "Choose a review record to see its versions." });
+      return;
+    }
+    const versions = await store.listVersions(code, actor.environment);
+    res.json({ code, versions: versions.map(({ snapshot, ...version }) => version) });
+  });
+
+  app.post("/api/workbench/versions/restore", async (req, res) => {
+    const actor = await grantedActor(req);
+    if (actor.error) {
+      res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    const code = String(req.body?.code || "").trim().toUpperCase();
+    const version = Number(req.body?.version);
+    const prior = await store.readVersion(code, actor.environment, version);
+    if (!prior?.snapshot) {
+      res.status(404).json({ message: "That version was not found." });
+      return;
+    }
+    const latest = await store.latestVersion(code, actor.environment);
+    const restored = normalizeReview(JSON.parse(prior.snapshot));
+    restored.version = latest + 1;
+    restored.status = restored.status === "Approved" ? "In review" : restored.status;
+    restored.changeNote = `Restored version ${version} as version ${restored.version}.`;
+    await store.saveItem({
+      code,
+      kind: "review",
+      status: restored.status,
+      note: JSON.stringify(restored),
+      environment: actor.environment,
+    });
+    await store.appendVersion({
+      code,
+      environment: actor.environment,
+      version: restored.version,
+      savedBy: actor.session.email,
+      changeNote: restored.changeNote,
+      snapshot: JSON.stringify(restored),
+    });
+    res.json(restored);
   });
 
   app.get("/api/access/grants", async (req, res) => {

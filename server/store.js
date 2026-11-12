@@ -28,6 +28,28 @@ CREATE TABLE IF NOT EXISTS items (
   note TEXT NOT NULL DEFAULT '',
   environment TEXT NOT NULL,
   PRIMARY KEY (code, environment)
+);
+CREATE TABLE IF NOT EXISTS record_versions (
+  id TEXT PRIMARY KEY,
+  code TEXT NOT NULL,
+  environment TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  saved_at TEXT NOT NULL,
+  saved_by TEXT NOT NULL,
+  change_note TEXT NOT NULL DEFAULT '',
+  batch_id TEXT,
+  snapshot TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS record_versions_key ON record_versions (code, environment, version);
+CREATE TABLE IF NOT EXISTS import_batches (
+  id TEXT PRIMARY KEY,
+  environment TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  label TEXT NOT NULL,
+  applied INTEGER NOT NULL,
+  unchanged INTEGER NOT NULL,
+  rejected INTEGER NOT NULL
 );`;
 
 function nowIso() {
@@ -118,6 +140,7 @@ function createMemory() {
       items.push(row);
       return row;
     },
+    ...versionMemory(),
   };
 }
 
@@ -195,6 +218,7 @@ function createFileStore() {
       write(data);
       return input;
     },
+    ...versionFile(read, write),
   };
 }
 
@@ -268,6 +292,140 @@ function createPostgres(connectionString) {
       await pool.query(`INSERT INTO items (code, kind, status, note, environment) VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (code, environment) DO UPDATE SET status = EXCLUDED.status, note = EXCLUDED.note, kind = EXCLUDED.kind`, [input.code, input.kind, input.status, input.note, input.environment]);
       return input;
+    },
+    ...versionPostgres(pool, ensure),
+  };
+}
+
+function versionRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    code: row.code,
+    environment: row.environment,
+    version: row.version,
+    savedAt: row.saved_at,
+    savedBy: row.saved_by,
+    changeNote: row.change_note,
+    batchId: row.batch_id,
+    snapshot: row.snapshot,
+  };
+}
+
+function versionMemory() {
+  const versions = [];
+  const batches = [];
+  return {
+    async latestVersion(code, environment) {
+      return versions.filter((row) => row.code === code && row.environment === environment).reduce((max, row) => Math.max(max, row.version), 0);
+    },
+    async listVersions(code, environment) {
+      return versions.filter((row) => row.code === code && row.environment === environment).sort((a, b) => b.version - a.version).slice(0, 20).map(versionRow);
+    },
+    async readVersion(code, environment, version) {
+      return versionRow(versions.find((row) => row.code === code && row.environment === environment && row.version === version) || null);
+    },
+    async appendVersion(input) {
+      const row = {
+        id: newId(),
+        code: input.code,
+        environment: input.environment,
+        version: input.version,
+        saved_at: nowIso(),
+        saved_by: input.savedBy,
+        change_note: input.changeNote || "",
+        batch_id: input.batchId || null,
+        snapshot: input.snapshot,
+      };
+      versions.push(row);
+      return versionRow(row);
+    },
+    async saveBatch(input) {
+      const row = { id: newId(), ...input, created_at: nowIso() };
+      batches.unshift(row);
+      return row;
+    },
+  };
+}
+
+function versionFile(read, write) {
+  return {
+    async latestVersion(code, environment) {
+      return (read().versions || []).filter((row) => row.code === code && row.environment === environment).reduce((max, row) => Math.max(max, row.version), 0);
+    },
+    async listVersions(code, environment) {
+      return (read().versions || []).filter((row) => row.code === code && row.environment === environment).sort((a, b) => b.version - a.version).slice(0, 20).map(versionRow);
+    },
+    async readVersion(code, environment, version) {
+      return versionRow((read().versions || []).find((row) => row.code === code && row.environment === environment && row.version === version) || null);
+    },
+    async appendVersion(input) {
+      const data = read();
+      data.versions ||= [];
+      const row = {
+        id: newId(),
+        code: input.code,
+        environment: input.environment,
+        version: input.version,
+        saved_at: nowIso(),
+        saved_by: input.savedBy,
+        change_note: input.changeNote || "",
+        batch_id: input.batchId || null,
+        snapshot: input.snapshot,
+      };
+      data.versions.push(row);
+      write(data);
+      return versionRow(row);
+    },
+    async saveBatch(input) {
+      const data = read();
+      data.batches ||= [];
+      const row = { id: newId(), ...input, created_at: nowIso() };
+      data.batches.unshift(row);
+      write(data);
+      return row;
+    },
+  };
+}
+
+function versionPostgres(pool, ensure) {
+  return {
+    async latestVersion(code, environment) {
+      await ensure();
+      const result = await pool.query("SELECT version FROM record_versions WHERE code = $1 AND environment = $2 ORDER BY version DESC LIMIT 1", [code, environment]);
+      return result.rows[0]?.version || 0;
+    },
+    async listVersions(code, environment) {
+      await ensure();
+      const result = await pool.query("SELECT id, code, environment, version, saved_at, saved_by, change_note, batch_id FROM record_versions WHERE code = $1 AND environment = $2 ORDER BY version DESC LIMIT 20", [code, environment]);
+      return result.rows.map(versionRow);
+    },
+    async readVersion(code, environment, version) {
+      await ensure();
+      const result = await pool.query("SELECT * FROM record_versions WHERE code = $1 AND environment = $2 AND version = $3", [code, environment, version]);
+      return versionRow(result.rows[0]);
+    },
+    async appendVersion(input) {
+      await ensure();
+      const row = {
+        id: newId(),
+        code: input.code,
+        environment: input.environment,
+        version: input.version,
+        saved_at: nowIso(),
+        saved_by: input.savedBy,
+        change_note: input.changeNote || "",
+        batch_id: input.batchId || null,
+        snapshot: input.snapshot,
+      };
+      await pool.query("INSERT INTO record_versions (id, code, environment, version, saved_at, saved_by, change_note, batch_id, snapshot) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", [row.id, row.code, row.environment, row.version, row.saved_at, row.saved_by, row.change_note, row.batch_id, row.snapshot]);
+      return versionRow(row);
+    },
+    async saveBatch(input) {
+      await ensure();
+      const row = { id: newId(), ...input, created_at: nowIso() };
+      await pool.query("INSERT INTO import_batches (id, environment, created_at, created_by, label, applied, unchanged, rejected) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)", [row.id, input.environment, row.created_at, input.createdBy, input.label, input.applied, input.unchanged, input.rejected]);
+      return row;
     },
   };
 }

@@ -33,7 +33,30 @@ export const VIEWS = [
   { role: "client", duty: "Receives the action, conditions, and lifecycle. Does not see the method notes." },
 ];
 
-const LIMIT = 2000;
+const LIMIT = 4000;
+
+export const IMPORT_FIELDS = [
+  "title",
+  "module",
+  "sourceItem",
+  "supplier",
+  "drawing",
+  "risk",
+  "confidence",
+  "confidenceScore",
+  "sourceCategory",
+  "action",
+  "status",
+  "ownerRole",
+  "reviewerRole",
+  "stage",
+  "layer",
+  "condition",
+  "lifecycle",
+  "evidence",
+  "openFact",
+  "sourceStatus",
+];
 
 export function blankReview(input = {}) {
   return {
@@ -55,6 +78,15 @@ export function blankReview(input = {}) {
     tradeSensitive: Boolean(input.tradeSensitive),
     preparedBy: clip(input.preparedBy, 120),
     reviewedBy: clip(input.reviewedBy, 120),
+    version: Number.isInteger(Number(input.version)) ? Number(input.version) : 0,
+    module: clip(input.module, 80),
+    sourceItem: clip(input.sourceItem, 80),
+    supplier: clip(input.supplier, 300),
+    drawing: clip(input.drawing, 120),
+    confidenceScore: clip(input.confidenceScore, 40),
+    sourceCategory: clip(input.sourceCategory, 80),
+    sourceStatus: clip(input.sourceStatus, 240),
+    changeNote: clip(input.changeNote, 300),
     updates: Array.isArray(input.updates) ? input.updates.slice(-12).map(cleanUpdate) : [],
   };
 }
@@ -134,6 +166,7 @@ export function scorecard(items) {
     `${count.byAction["Proceed with protections"]} may proceed with documented protections.`,
     `${count.byAction["Proceed with active mitigation"]} may proceed only with active mitigation.`,
     `${count.byAction["Do not proceed absent resolution"]} should not proceed until the open fact is resolved.`,
+    `${count.byAction["Not set"] || 0} records still need one of the four actions.`,
     `${count.pendingConfidence} records have pending confidence.`,
     "A missing fact lowers confidence. It does not change the risk band.",
     `${count.missingLifecycle} records still need a future policy and lifecycle note.`,
@@ -144,6 +177,7 @@ export function scorecard(items) {
 export function actionList(items) {
   const actions = [];
   for (const item of items.map(normalizeReview)) {
+    if (!item.action && item.sourceCategory) actions.push({ code: item.code, owner: item.ownerRole, text: `${item.code} still needs one of the four actions. The source category is not an approval.` });
     if (!item.lifecycle) actions.push({ code: item.code, owner: "nstt", text: `${item.code} still needs a future policy and lifecycle note before it can be approved.` });
     if (!item.evidence) actions.push({ code: item.code, owner: item.ownerRole, text: `${item.code} is missing a fact. Confidence stays pending. The risk band does not change.` });
     if (item.action === "Do not proceed absent resolution") actions.push({ code: item.code, owner: item.ownerRole, text: `${item.code} should not proceed until the open fact is resolved.` });
@@ -156,6 +190,135 @@ export function nextCode(items) {
   const numbers = items.map((item) => Number(String(item.code || "").slice(2))).filter((value) => Number.isInteger(value));
   const next = Math.max(0, ...numbers) + 1;
   return `R-${String(next).padStart(2, "0")}`;
+}
+
+export function validRecordCode(code) {
+  return /^(?:[A-Z]-\d{2,4}|[A-Z]{1,4}\d{2,4})$/.test(String(code || "").trim());
+}
+
+export function canonicalAction(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return ACTIONS.find((action) => action.toLowerCase() === text) || "";
+}
+
+function canonicalChoice(value, choices, aliases = {}) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const alias = aliases[text.toLowerCase()];
+  if (alias) return alias;
+  return choices.find((choice) => choice.toLowerCase() === text.toLowerCase()) || null;
+}
+
+export function applyImportRow(existing, row, actorEmail) {
+  const code = String(row.code || "").trim().toUpperCase();
+  if (!validRecordCode(code)) return { result: "rejected", code, message: "The code is not a review key." };
+  const current = existing ? normalizeReview(existing) : null;
+  const rawVersion = row.version === "" || row.version == null ? null : Number(row.version);
+  if (current && (rawVersion == null || rawVersion !== current.version)) {
+    return {
+      result: "rejected",
+      code,
+      message: `Version ${rawVersion ?? "blank"} does not match version ${current.version}. Export the register again before this update.`,
+    };
+  }
+  if (!current && rawVersion != null && rawVersion !== 0) {
+    return { result: "rejected", code, message: "A new record must use version 0." };
+  }
+  const next = {
+    ...(current || blankReview({
+      code,
+      ownerRole: "nstt",
+      reviewerRole: "cpi",
+      stage: "What",
+      layer: "Part significance",
+      status: "Open",
+    })),
+  };
+  let changed = !current;
+  for (const field of IMPORT_FIELDS) {
+    if (row[field] == null || String(row[field]).trim() === "") continue;
+    const value = String(row[field]).trim();
+    if (value.toUpperCase() === "CLEAR") {
+      if (next[field]) {
+        next[field] = "";
+        changed = true;
+      }
+      continue;
+    }
+    if (field === "action") {
+      const mapped = canonicalAction(value);
+      if (!mapped) return { result: "rejected", code, message: "Action must be one of the four review actions, or left blank." };
+      if (mapped !== next.action) {
+        next.action = mapped;
+        changed = true;
+      }
+      continue;
+    }
+    if (field === "status") {
+      if (value === "Approved") return { result: "rejected", code, message: "Import cannot approve a record. A different role uses Approve after review." };
+      const status = canonicalChoice(value, STATUSES);
+      if (!status) return { result: "rejected", code, message: "Status is not a known workflow status." };
+      if (status !== next.status) {
+        next.status = status;
+        changed = true;
+      }
+      continue;
+    }
+    if (field === "risk") {
+      const risk = canonicalChoice(value, RISK, { l: "Low", m: "Medium", h: "High", moderate: "Medium" });
+      if (!risk) return { result: "rejected", code, message: "Risk is not a known band." };
+      if (risk !== next.risk) {
+        next.risk = risk;
+        changed = true;
+      }
+      continue;
+    }
+    if (field === "confidence") {
+      const confidence = canonicalChoice(value, CONFIDENCE, { moderate: "Medium" });
+      if (!confidence) return { result: "rejected", code, message: "Confidence is not a known value." };
+      if (confidence !== next.confidence) {
+        next.confidence = confidence;
+        changed = true;
+      }
+      continue;
+    }
+    if (field === "ownerRole" || field === "reviewerRole") {
+      const role = canonicalChoice(value, ["nstt", "cpi", "trade"]);
+      if (!role) return { result: "rejected", code, message: "Use nstt, cpi, or trade for the owner and reviewer roles." };
+      if (role !== next[field]) {
+        next[field] = role;
+        changed = true;
+      }
+      continue;
+    }
+    if (field === "stage") {
+      const stage = canonicalChoice(value, STAGES);
+      if (!stage) return { result: "rejected", code, message: "Stage is not one of Why, What, When, Where, Who, or How." };
+      if (stage !== next.stage) {
+        next.stage = stage;
+        changed = true;
+      }
+      continue;
+    }
+    if (field === "layer") {
+      const layer = canonicalChoice(value, LAYERS);
+      if (!layer) return { result: "rejected", code, message: "Layer is not a known review layer." };
+      if (layer !== next.layer) {
+        next.layer = layer;
+        changed = true;
+      }
+      continue;
+    }
+    if (String(next[field] || "") !== value) {
+      next[field] = value;
+      changed = true;
+    }
+  }
+  const record = normalizeReview({ ...next, code, preparedBy: current?.preparedBy || actorEmail || "" });
+  if (!changed) return { result: "unchanged", code, record, message: "No field changed." };
+  record.version = (current?.version || 0) + 1;
+  record.changeNote = clip(row.changeNote || "Imported update.", 300);
+  return { result: "applied", code, record, message: record.changeNote };
 }
 
 function clip(value, max = LIMIT) {
