@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { approvalBlock, methodChecklist, metrics, normalizeReview, scorecard } from "../public/rules.js";
+import { actionList, approvalBlock, methodChecklist, metrics, normalizeReview, scorecard } from "../public/rules.js";
 
 test("a missing fact lowers confidence and leaves risk unchanged", () => {
   const record = normalizeReview({ code: "R-01", risk: "High", confidence: "High", evidence: "", lifecycle: "Review at the next gate." });
@@ -38,7 +38,9 @@ test("scorecard counts follow the current records", () => {
   items[0] = normalizeReview({ ...items[0], action: "Proceed", evidence: "Named source.", lifecycle: "Annual review.", confidence: "High" });
   items[1] = normalizeReview({ ...items[1], action: "Do not proceed absent resolution", evidence: "Open ownership fact.", lifecycle: "Hold until resolved.", risk: "High" });
   const card = scorecard(items);
-  assert.equal(card.count.records, 6);
+  assert.equal(card.count.records, 7);
+  assert.equal(items[0].stage, "Why");
+  assert.equal(actionList(items).some((item) => item.text.includes("should not proceed")), true);
   assert.equal(card.count.byAction.Proceed, 1);
   assert.equal(card.count.byAction["Do not proceed absent resolution"], 1);
   assert.equal(metrics(items).pendingConfidence >= 1, true);

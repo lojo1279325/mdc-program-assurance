@@ -9,6 +9,7 @@ import {
   VIEWS,
   approvalBlock,
   clientView,
+  actionList,
   methodChecklist,
   metrics,
   nextCode,
@@ -155,9 +156,12 @@ function drawOutputs() {
   const cells = state.client
     ? (item) => [item.code, item.title, show(item.action), show(item.condition), show(item.lifecycle), item.confidence]
     : (item) => [item.code, item.title, item.risk, item.confidence, show(item.action), item.status, show(item.lifecycle)];
+  const actions = actionList(state.items).filter((action) => !state.client || action.text.includes("should not proceed"));
   return `<div class="pane sentences">
     <p class="label">${state.client ? "Client output" : "Internal scorecard"}</p>
     ${card.sentences.map((sentence) => `<p>${esc(sentence)}</p>`).join("")}
+    <p class="label">Action list</p>
+    ${actions.length ? actions.map((action) => `<p>${esc(action.text)}</p>`).join("") : "<p>No open actions. Add a review to generate the list.</p>"}
     <div class="row-actions"><button type="button" id="download" class="primary">Download register</button></div>
   </div>
   <div style="overflow:auto;margin-top:12px;">
@@ -262,7 +266,9 @@ async function persist(item, quiet = false) {
     setNotice(body.message || "The record was not stored.");
     return;
   }
-  setNotice("Stored for this environment. The host still uses memory until a database is connected, so a restart clears it.");
+  setNotice(state.session?.database === "postgres"
+    ? "Stored in the development database. A restart does not clear this record."
+    : "Stored for this environment. This host still uses memory, so a restart clears it.");
 }
 
 function replace(item) {
@@ -379,7 +385,9 @@ if (sessionResponse?.ok) {
     if (stored.ok) {
       const body = await stored.json();
       state.items = Array.isArray(body.items) ? body.items.map(normalizeReview) : [];
-      setNotice(`Signed in as ${state.session.role}. Records on this host do not survive a restart until a database is connected.`);
+      setNotice(state.session.database === "postgres"
+        ? `Signed in as ${state.session.role}. Records are stored in the development database.`
+        : `Signed in as ${state.session.role}. Records on this host do not survive a restart until a database is connected.`);
     }
   }
 }

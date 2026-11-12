@@ -22,11 +22,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS items (
-  code TEXT PRIMARY KEY,
+  code TEXT NOT NULL,
   kind TEXT NOT NULL,
   status TEXT NOT NULL,
   note TEXT NOT NULL DEFAULT '',
-  environment TEXT NOT NULL
+  environment TEXT NOT NULL,
+  PRIMARY KEY (code, environment)
 );`;
 
 function nowIso() {
@@ -265,7 +266,7 @@ function createPostgres(connectionString) {
     async saveItem(input) {
       await ensure();
       await pool.query(`INSERT INTO items (code, kind, status, note, environment) VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (code) DO UPDATE SET status = EXCLUDED.status, note = EXCLUDED.note, kind = EXCLUDED.kind, environment = EXCLUDED.environment`, [input.code, input.kind, input.status, input.note, input.environment]);
+        ON CONFLICT (code, environment) DO UPDATE SET status = EXCLUDED.status, note = EXCLUDED.note, kind = EXCLUDED.kind`, [input.code, input.kind, input.status, input.note, input.environment]);
       return input;
     },
   };
