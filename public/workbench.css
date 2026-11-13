@@ -140,6 +140,18 @@ table { width: 100%; max-width: 980px; }
 .track span { color: var(--muted); font-size: 12px; display: block; overflow-wrap: anywhere; }
 .section-title { font-size: 16px; margin: 16px 0 4px; }
 .code-link { width: auto; padding: 4px 8px; }
+.brief-bar { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 12px; }
+.brief-bar .primary, .row-actions .primary { background: var(--navy); color: #fff; text-align: center; }
+.brief-bar .ghost { background: #fff; color: var(--ink); border-color: var(--line); }
+.jump { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.jump button { width: auto; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 6px 8px; }
+.jump button.on { border-color: var(--navy); }
+.slide { background: #fff; border: 1px solid var(--line); border-left: 4px solid var(--navy); border-radius: 8px; min-height: 420px; padding: 28px 32px; display: grid; align-content: start; gap: 12px; }
+.slide h2 { font-size: 28px; line-height: 1.25; margin: 0; color: var(--navy); font-weight: 600; }
+.kicker { margin: 0; color: var(--muted); font-size: 12px; }
+.slide-lines { display: grid; gap: 8px; }
+.slide-lines p { margin: 0; font-size: 16px; line-height: 1.45; }
+.vendor-map { grid-template-columns: 1fr; }
 #project { min-width: 180px; }
 nav { max-height: none; }
 @media (max-width: 900px) {
@@ -149,5 +161,7 @@ nav { max-height: none; }
   nav { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .metrics, .split, .cards, .duties, .grid-2, .track, .track.stages { grid-template-columns: 1fr; }
   .split .list, .split .pane { max-height: none; }
-  .top { flex-direction: column; align-items: stretch; }
+  .top, .brief-bar { flex-direction: column; align-items: stretch; }
+  .slide { min-height: 0; padding: 20px; }
+  .slide h2 { font-size: 22px; }
 }

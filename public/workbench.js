@@ -18,6 +18,9 @@ import {
 } from "./rules.js";
 import { BUILT_IN_PROJECT, filterProject } from "./boards.js";
 import { drawCompletion, drawLibrary, drawOwner, drawProjects, drawSources, drawUser, drawWorkflow } from "./views.js";
+import { decisionBrief, vendorMap, vendorMapCsv } from "./brief.js";
+import { drawBrief, drawVendorMap } from "./briefview.js";
+import { briefToPptx } from "./pptx.js";
 
 const state = {
   items: [],
@@ -31,6 +34,7 @@ const state = {
   library: { vendors: [], parts: [] },
   sourceStatus: { federalRegister: true, screeningList: false, sayari: false },
   sourceResults: [],
+  slide: 0,
   notice: "This is the development workspace. Production is unchanged. A granted role is required before a record is stored.",
 };
 
@@ -39,6 +43,8 @@ const titles = {
   cards: "Review cards",
   metrics: "Metrics",
   outputs: "Outputs",
+  brief: "Decision brief",
+  vendors: "Vendor map",
   duties: "Separation of duties",
   updates: "Import and versions",
   workflow: "Workflow",
@@ -73,6 +79,24 @@ function posture(action) {
 
 function projectItems() {
   return filterProject(state.items, state.project);
+}
+
+function currentBrief() {
+  const project = state.projects.find((item) => item.code === state.project);
+  return decisionBrief(projectItems(), {
+    projectName: project?.name || "MDC Program Assurance",
+    projectCode: state.project,
+    generatedOn: new Intl.DateTimeFormat("en-US", { year: "numeric", month: "long", day: "numeric" }).format(new Date()),
+    client: state.client,
+  });
+}
+
+function downloadFile(bytes, name, type) {
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([bytes], { type }));
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(link.href);
 }
 
 function visibleItems() {
@@ -112,6 +136,8 @@ function render() {
     mine: () => drawUser(projectItems(), state.session, state.client),
     owner: () => drawOwner(projectItems(), state.client),
     library: () => drawLibrary(state.items, state.library, state.project, state.query, state.client),
+    vendors: () => drawVendorMap(vendorMap(projectItems()), state.query),
+    brief: () => drawBrief(currentBrief(), state.slide),
     sources: () => drawSources(state.sourceStatus, state.sourceResults, state.client),
     projects: () => drawProjects(state.projects, state.project),
   };
@@ -400,9 +426,37 @@ function bind() {
   if (projectForm) projectForm.addEventListener("submit", createProject);
   const sourceForm = document.querySelector("#source-form");
   if (sourceForm) sourceForm.addEventListener("submit", checkSources);
+  main.querySelectorAll("[data-brief]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const brief = currentBrief();
+      const last = Math.max(0, brief.slides.length - 1);
+      if (button.dataset.brief === "prev") state.slide = Math.max(0, state.slide - 1);
+      if (button.dataset.brief === "next") state.slide = Math.min(last, state.slide + 1);
+      if (button.dataset.brief === "export") {
+        downloadFile(briefToPptx(brief), `${state.project}-decision-brief.pptx`, "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+        setNotice("The decision brief is downloading. It uses the current approved records for this project.");
+        return;
+      }
+      if (button.dataset.brief === "vendors") {
+        const map = vendorMap(projectItems());
+        downloadFile(vendorMapCsv(map), `${state.project}-vendor-map.csv`, "text/csv");
+        setNotice("The vendor map is downloading. Accuracy confidence is separate from the risk band.");
+        return;
+      }
+      state.slide = Math.min(last, state.slide);
+      render();
+    });
+  });
+  main.querySelectorAll("[data-slide-index]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.slide = Number(button.dataset.slideIndex) || 0;
+      render();
+    });
+  });
   main.querySelectorAll("[data-project]").forEach((button) => {
     button.addEventListener("click", () => {
       state.project = button.dataset.project;
+      state.slide = 0;
       state.view = "queue";
       const visible = visibleItems();
       state.selected = visible[0]?.code || "";
@@ -550,6 +604,7 @@ function syncProjectSelect() {
 
 document.querySelector("#project").addEventListener("change", (event) => {
   state.project = event.target.value;
+  state.slide = 0;
   const visible = visibleItems();
   state.selected = visible[0]?.code || "";
   setNotice(`Showing ${state.project}. Metrics, cards, and dashboards follow this project. The workbook export still covers the full register.`);
