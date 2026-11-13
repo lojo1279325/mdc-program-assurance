@@ -20,6 +20,7 @@ import { BUILT_IN_PROJECT, filterProject } from "./boards.js";
 import { drawCompletion, drawLibrary, drawOwner, drawProjects, drawSources, drawUser, drawWorkflow } from "./views.js";
 import { decisionBrief, vendorMap, vendorMapCsv } from "./brief.js";
 import { drawBrief, drawVendorMap } from "./briefview.js";
+import { drawPresentation, presentationSlides } from "./present.js";
 import { briefToPptx } from "./pptx.js";
 
 const state = {
@@ -44,6 +45,7 @@ const titles = {
   metrics: "Metrics",
   outputs: "Outputs",
   brief: "Decision brief",
+  present: "Presentation",
   vendors: "Vendor map",
   duties: "Separation of duties",
   updates: "Import and versions",
@@ -138,6 +140,7 @@ function render() {
     library: () => drawLibrary(state.items, state.library, state.project, state.query, state.client),
     vendors: () => drawVendorMap(vendorMap(projectItems()), state.query),
     brief: () => drawBrief(currentBrief(), state.slide),
+    present: () => drawPresentation(currentBrief(), state.slide),
     sources: () => drawSources(state.sourceStatus, state.sourceResults, state.client),
     projects: () => drawProjects(state.projects, state.project),
   };
@@ -429,7 +432,7 @@ function bind() {
   main.querySelectorAll("[data-brief]").forEach((button) => {
     button.addEventListener("click", () => {
       const brief = currentBrief();
-      const last = Math.max(0, brief.slides.length - 1);
+      const last = Math.max(0, (state.view === "present" ? presentationSlides(brief) : brief.slides).length - 1);
       if (button.dataset.brief === "prev") state.slide = Math.max(0, state.slide - 1);
       if (button.dataset.brief === "next") state.slide = Math.min(last, state.slide + 1);
       if (button.dataset.brief === "export") {
@@ -649,6 +652,13 @@ document.addEventListener("keydown", (event) => {
   const views = ["queue", "cards", "metrics", "outputs", "duties", "updates"];
   if (event.key >= "1" && event.key <= "6") {
     state.view = views[Number(event.key) - 1];
+    render();
+    return;
+  }
+  if ((state.view === "present" || state.view === "brief") && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
+    const brief = currentBrief();
+    const last = Math.max(0, (state.view === "present" ? presentationSlides(brief) : brief.slides).length - 1);
+    state.slide = event.key === "ArrowRight" ? Math.min(last, state.slide + 1) : Math.max(0, state.slide - 1);
     render();
   }
 });
