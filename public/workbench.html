@@ -15,6 +15,10 @@
       </div>
       <header class="appbar">
         <div class="appbar-title">
+          <label class="menu-button" for="nav-toggle">
+            <span class="menu-icon" aria-hidden="true"></span>
+            <span class="visually-hidden">Navigation</span>
+          </label>
           <p class="brand">MDC Program Assurance</p>
         </div>
         <div class="shell-search search field">
@@ -23,7 +27,10 @@
           <span class="field-example" id="search-example">Example: a record code or a vendor legal name.</span>
           <span class="field-tip" id="search-tip" role="tooltip">Search by record code, title, or vendor name. The list narrows as you type.</span>
         </div>
-        <a class="appbar-link" href="/">Sign-in page</a>
+        <a class="appbar-link profile" href="/" aria-label="Sign-in page">
+          <span class="profile-mark" aria-hidden="true"></span>
+          <span class="profile-name">Sign in</span>
+        </a>
       </header>
       <div class="shell">
         <aside class="rail" aria-label="Navigation">
@@ -60,13 +67,14 @@
               <h1 id="view-title">Queue</h1>
               <p id="notice" class="quiet">Loading the development workspace.</p>
             </div>
-          </div>
-          <div class="commandbar" aria-label="Commands">
-            <div class="command-actions">
+            <div class="command-actions" aria-label="Commands">
               <button type="button" id="add-record" class="primary">New</button>
               <button type="button" id="load-method" class="ghost">Method checklist</button>
               <button type="button" id="client-toggle" class="ghost">Client view</button>
             </div>
+          </div>
+          <div class="filterbar" aria-label="Filters">
+            <p class="filter-label">Filters</p>
             <div class="command-filters">
               <div class="search field">
                 <span class="field-label">Project <button type="button" class="field-mark" aria-expanded="false" aria-describedby="project-tip">Guide</button></span>

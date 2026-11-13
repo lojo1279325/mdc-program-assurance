@@ -666,6 +666,8 @@ document.querySelectorAll(".nav").forEach((button) => {
       if (state.session?.administrator) loadGrants().then(() => { if (state.view === "analysis") render(); });
     }
     state.view = button.dataset.view;
+    const toggle = document.querySelector("#nav-toggle");
+    if (toggle) toggle.checked = false;
     render();
   });
 });
