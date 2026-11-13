@@ -23,7 +23,7 @@ import { drawBrief, drawVendorMap } from "./briefview.js";
 import { drawPresentation, presentationSlides } from "./present.js";
 import { briefToPptx } from "./pptx.js";
 import { recordAccess } from "./privileges.js";
-import { analysisSteps, drawWizard } from "./wizard.js";
+import { analysisRecord, analysisSteps, drawWizard } from "./wizard.js";
 
 const state = {
   items: [],
@@ -148,15 +148,23 @@ function render() {
     present: () => drawPresentation(currentBrief(), state.slide),
     sources: () => drawSources(state.sourceStatus, state.sourceResults, state.client),
     projects: () => drawProjects(state.projects, state.project, state.session?.role || ""),
-    analysis: () => drawWizard({
-      role: state.session?.role || "",
-      step: state.wizardStep,
-      record: selected(),
-      waiting: waitingForRole(),
-      environment: state.session?.environment || "development",
-      canGrant: Boolean(state.session?.administrator),
-      grants: state.grants,
-    }),
+    analysis: () => {
+      const next = analysisRecord(state.session?.role || "", projectItems(), state.selected);
+      if (next?.code && next.code !== state.selected) {
+        state.selected = next.code;
+        state.wizardStep = 0;
+      }
+      return drawWizard({
+        role: state.session?.role || "",
+        step: state.wizardStep,
+        record: selected(),
+        waiting: waitingForRole(),
+        environment: state.session?.environment || "development",
+        canGrant: Boolean(state.session?.administrator),
+        grants: state.grants,
+        actorEmail: state.session?.email || "",
+      });
+    },
   };
   syncProjectSelect();
   main.innerHTML = draw[state.view]();
@@ -677,7 +685,13 @@ async function wizardAction(action) {
     return;
   }
   const next = normalizeReview(current);
-  if (action === "send") next.status = "In review";
+  if (action === "send") {
+    if (!next.action || !next.evidence || !next.lifecycle) {
+      setNotice("Send to review after the action, the evidence, and the lifecycle are recorded.");
+      return;
+    }
+    next.status = "In review";
+  }
   if (action === "return") next.status = "Returned";
   if (action === "approve") next.status = "Approved";
   const block = action === "approve" ? approvalBlock(actor(), next) : "";
@@ -685,7 +699,6 @@ async function wizardAction(action) {
     setNotice(block);
     return;
   }
-  replace(next);
   await persist(next);
 }
 
@@ -710,7 +723,6 @@ async function saveWizardStep(event, formElement) {
   }
   const saved = normalizeReview(next);
   saved.updates = next.updates;
-  replace(saved);
   await persist(saved);
 }
 

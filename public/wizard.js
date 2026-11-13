@@ -1,4 +1,4 @@
-import { ACTIONS, CONFIDENCE, RISK, STAGES } from "./rules.js";
+import { ACTIONS, CONFIDENCE, RISK, STAGES, approvalBlock } from "./rules.js";
 import { ROLE_LABEL, recordAccess, roleSummary } from "./privileges.js";
 
 const PREPARE_STEPS = [
@@ -33,6 +33,17 @@ function esc(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+export function analysisRecord(role, items, selectedCode) {
+  const records = Array.isArray(items) ? items : [];
+  const selected = records.find((item) => item.code === selectedCode) || null;
+  const waiting = records.filter((item) => item.status === "In review" && (item.reviewerRole === role || (role === "trade" && item.tradeSensitive)));
+  const ownedOpen = records.filter((item) => item.ownerRole === role && (item.status === "Open" || item.status === "Returned"));
+  if (selected && (waiting.some((item) => item.code === selected.code) || ownedOpen.some((item) => item.code === selected.code))) return selected;
+  if (role === "cpi" || role === "trade") return waiting[0] || ownedOpen[0] || selected;
+  if (role === "nstt") return ownedOpen[0] || selected;
+  return selected;
 }
 
 export function analysisSteps(role, record) {
@@ -99,21 +110,23 @@ function factList(record) {
   return rows.map(([label, value]) => `<p><strong>${esc(label)}.</strong> ${esc(value)}</p>`).join("");
 }
 
-export function drawWizard({ role = "", step = 0, record = null, waiting = [], environment = "development", canGrant = false, grants = [] }) {
+export function drawWizard({ role = "", step = 0, record = null, waiting = [], environment = "development", canGrant = false, grants = [], actorEmail = "" }) {
   const steps = analysisSteps(role, record);
   const index = Math.min(Math.max(0, step), Math.max(0, steps.length - 1));
   const current = steps[index];
   const access = recordAccess({ role }, record);
+  const reviewRole = role === "cpi" || role === "trade";
   const mode = role === "administrator"
     ? "administer"
     : access.mode === "prepare" || (role === "nstt" && !record)
       ? "prepare"
-      : access.mode === "review"
+      : access.mode === "review" || reviewRole
         ? "review"
         : "locked";
   const stepButtons = steps.map((item, itemIndex) => `<button type="button" class="${itemIndex === index ? "on" : ""}" data-wizard-step="${itemIndex}">${itemIndex + 1}. ${esc(item.title)}</button>`).join("");
   let panel = `<p class="kicker">Step ${index + 1} of ${steps.length}${current.stage ? ` · ${esc(current.stage)}` : ""}</p><h2>${esc(current.title)}</h2><p>${esc(current.body)}</p>`;
   if (mode === "prepare") {
+    if (reviewRole && !waiting.length) panel += `<p class="quiet">No record is waiting on ${esc(ROLE_LABEL[role] || role)} for review.</p>`;
     if (!record) {
       panel += `<p>Start one analysis in the selected project. It stays Open until you send it to a different role.</p><div class="row-actions"><button type="button" class="primary" data-wizard="start">Start this analysis</button></div>`;
     } else if (current.id === "handoff") {
@@ -129,8 +142,10 @@ export function drawWizard({ role = "", step = 0, record = null, waiting = [], e
       panel += `<form class="form" id="wizard-form"><label class="field">Review note <textarea name="update"></textarea></label><div class="row-actions"><button type="submit" class="primary">Save note</button></div></form>`;
     }
     if (current.id === "decision") {
-      panel += `<p class="locked-note">${esc(access.message)}</p><div class="row-actions">${access.canReturn ? `<button type="button" data-wizard="return">Return</button>` : ""}${access.canApprove ? `<button type="button" class="primary" data-wizard="approve">Approve</button>` : ""}</div>`;
+      const block = record ? approvalBlock({ role, email: actorEmail }, record) : "Select a record before approval.";
+      panel += `<p class="locked-note">${esc(block || access.message)}</p><div class="row-actions">${access.canReturn ? `<button type="button" data-wizard="return">Return</button>` : ""}${access.canApprove && !block ? `<button type="button" class="primary" data-wizard="approve">Approve</button>` : ""}</div>`;
     }
+    if (access.mode !== "review") panel += `<p class="locked-note">${esc(access.message || roleSummary(role))}</p>`;
   } else {
     if (current.id === "grant") {
       panel += canGrant
@@ -152,6 +167,10 @@ export function drawWizard({ role = "", step = 0, record = null, waiting = [], e
   }
   if (mode === "locked") {
     panel += `<p class="locked-note">${esc(access.message || roleSummary(role))}</p>`;
+    if (role === "nstt") panel += `<div class="row-actions"><button type="button" class="primary" data-wizard="start">Start a new analysis</button></div>`;
+  }
+  if (mode === "prepare" && role === "nstt" && record && index === 0) {
+    panel += `<div class="row-actions"><button type="button" data-wizard="start">Start a new analysis</button></div>`;
   }
   panel += `<div class="row-actions"><button type="button" data-wizard="prev">Previous</button><button type="button" data-wizard="next">Next</button></div>`;
   return `<div class="wizard"><div class="wizard-steps" aria-label="Analysis steps">${stepButtons}</div><article class="wizard-panel"><p class="locked-note">${esc(roleSummary(role))}</p>${panel}</article></div>`;
