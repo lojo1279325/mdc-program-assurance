@@ -244,6 +244,7 @@ export function decisionBrief(items, options = {}) {
     missingEvidence: missingEvidence.length,
     missingLifecycle: missingLifecycle.length,
     pending: pending.length,
+    actions: counts,
     slides,
     vendors: map.vendors,
     unnamed: map.unnamed,

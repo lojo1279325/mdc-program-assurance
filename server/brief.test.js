@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { accuracyConfidence, decisionBrief, namedVendor, vendorMap, vendorMapCsv } from "../public/brief.js";
+import { drawPresentation } from "../public/present.js";
 import { briefToPptx } from "../public/pptx.js";
 import { normalizeReview } from "../public/rules.js";
 
@@ -66,4 +67,10 @@ test("the export leaves out personal names and keeps the current headline", () =
   assert.match(csv, /Accuracy confidence/);
   assert.doesNotMatch(csv, /analyst@/);
   assert.doesNotMatch(csv, /Internal method note/);
+  const panel = drawPresentation(brief, 4);
+  assert.match(panel, /Live presentation/);
+  assert.match(panel, /Slide previews/);
+  assert.match(panel, /Harbor Check Components/);
+  assert.match(panel, /map-picture/);
+  assert.doesNotMatch(panel, /analyst@/);
 });
