@@ -22,10 +22,10 @@ export const LAYERS = [
 ];
 
 export const DUTIES = [
-  { role: "nstt", duty: "Prepares the assurance record and the recommendation." },
-  { role: "cpi", duty: "Reviews component and supplier facts. Does not approve its own draft." },
-  { role: "trade", duty: "Reviews trade and export conditions before approval of a trade-sensitive record." },
-  { role: "administrator", duty: "Grants roles. Cannot approve a record that same person prepared." },
+  { role: "nstt", duty: "Prepares the assurance record and the recommendation. Sends a complete record to a different role. Does not approve." },
+  { role: "cpi", duty: "Reviews component and supplier facts on records assigned to CPI. Does not change the analysis or approve its own draft." },
+  { role: "trade", duty: "Reviews trade and export conditions. A trade-sensitive record needs a trade note before approval. Does not import the register." },
+  { role: "administrator", duty: "Grants roles for one environment and can create a project. Does not prepare or approve an analysis record." },
 ];
 
 export const VIEWS = [
@@ -118,10 +118,13 @@ export function normalizeReview(input) {
 export function approvalBlock(actor, record) {
   const item = normalizeReview(record);
   if (!actor?.email) return "Sign-in is required before a record can be approved.";
+  if (actor.role === "administrator") return "The administrator role grants access. It does not approve an analysis record.";
   if (actor.email === item.preparedBy) return "The person who prepared this record cannot approve it.";
   if (!actor.role || actor.role === item.ownerRole) return "Approval requires a different role from the owner role.";
-  if (item.tradeSensitive && actor.role !== "trade" && item.reviewerRole === "trade" && actor.role !== "administrator") {
-    return "A trade-sensitive record needs the trade review before approval.";
+  if (actor.role !== item.reviewerRole) return "Approval is limited to the assigned reviewer role.";
+  if (item.tradeSensitive && actor.role !== "trade") {
+    const tradeNoted = (item.updates || []).some((update) => update.role === "trade" && String(update.text || "").trim());
+    if (!tradeNoted) return "A trade-sensitive record needs a trade review note before approval.";
   }
   if (!ACTIONS.includes(item.action)) return "Approval requires an action.";
   if (!item.lifecycle) return "Approval requires a future policy and lifecycle note.";

@@ -22,6 +22,8 @@ import { decisionBrief, vendorMap, vendorMapCsv } from "./brief.js";
 import { drawBrief, drawVendorMap } from "./briefview.js";
 import { drawPresentation, presentationSlides } from "./present.js";
 import { briefToPptx } from "./pptx.js";
+import { recordAccess } from "./privileges.js";
+import { analysisSteps, drawWizard } from "./wizard.js";
 
 const state = {
   items: [],
@@ -36,10 +38,13 @@ const state = {
   sourceStatus: { federalRegister: true, screeningList: false, sayari: false },
   sourceResults: [],
   slide: 0,
+  wizardStep: 0,
+  grants: [],
   notice: "This is the development workspace. Production is unchanged. A granted role is required before a record is stored.",
 };
 
 const titles = {
+  analysis: "Analysis",
   queue: "Queue",
   cards: "Review cards",
   metrics: "Metrics",
@@ -137,15 +142,25 @@ function render() {
     completion: () => drawCompletion(projectItems()),
     mine: () => drawUser(projectItems(), state.session, state.client),
     owner: () => drawOwner(projectItems(), state.client),
-    library: () => drawLibrary(state.items, state.library, state.project, state.query, state.client),
+    library: () => drawLibrary(state.items, state.library, state.project, state.query, state.client, state.session?.role || ""),
     vendors: () => drawVendorMap(vendorMap(projectItems()), state.query),
     brief: () => drawBrief(currentBrief(), state.slide),
     present: () => drawPresentation(currentBrief(), state.slide),
     sources: () => drawSources(state.sourceStatus, state.sourceResults, state.client),
-    projects: () => drawProjects(state.projects, state.project),
+    projects: () => drawProjects(state.projects, state.project, state.session?.role || ""),
+    analysis: () => drawWizard({
+      role: state.session?.role || "",
+      step: state.wizardStep,
+      record: selected(),
+      waiting: waitingForRole(),
+      environment: state.session?.environment || "development",
+      canGrant: Boolean(state.session?.administrator),
+      grants: state.grants,
+    }),
   };
   syncProjectSelect();
   main.innerHTML = draw[state.view]();
+  syncRoleControls();
   bind();
 }
 
@@ -162,7 +177,11 @@ function drawQueue() {
   const items = visibleItems();
   const current = selected();
   if (!items.length) {
-    return `<div class="pane"><p>No review records yet.</p><p class="quiet">Import the register workbook, or start the method checklist.</p></div>`;
+    const role = state.session?.role || "";
+    const hint = role === "nstt"
+      ? "Start the method checklist, or open Analysis and start one review."
+      : "Your role can read the register. It cannot start or import an analysis record.";
+    return `<div class="pane"><p>No review records yet.</p><p class="quiet">${esc(hint)}</p></div>`;
   }
   return `<div class="split">
     <div class="list">${items.map((item) => `<button type="button" class="item ${current && current.code === item.code ? "on" : ""}" data-code="${esc(item.code)}">
@@ -260,53 +279,61 @@ function drawUpdates() {
     <p class="label">Large update</p>
     <p>Export the register, edit the Register sheet, and import it back. A blank cell keeps the current value. Type CLEAR to remove a text value.</p>
     <p>Each imported change becomes the next version. A stale version is rejected, so export again before you retry that row.</p>
-    <p>Import cannot approve a record. Send the record to review, then a different person and a different role use Approve. The person who prepared the record cannot approve it.</p>
+    <p>Import cannot approve a record. Only the NSTT role can import register updates, and only for records it prepares. A different person in the assigned reviewer role uses Approve.</p>
+    ${state.session?.role === "nstt" ? "" : `<p>Your role cannot import the register. Ask NSTT to make the update, or use Analysis for the work your role is allowed to do.</p>`}
     <p>Hold or Restructure is a source category from the October workbook. It is not one of the four actions. Set the action before approval. A missing fact keeps confidence pending and does not change the risk band.</p>
     <p>${state.items.length} records are loaded. ${waiting} still need an action. ${inReview} are in review.</p>
     <div class="row-actions">
       <button type="button" id="export-workbook" class="primary">Export workbook</button>
-      <label class="ghost">Choose workbook <input id="import-file" type="file" accept=".xlsx" /></label>
-      <button type="button" id="import-workbook">Import workbook</button>
+      ${state.session?.role === "nstt" ? `<label class="ghost">Choose workbook <input id="import-file" type="file" accept=".xlsx" /></label><button type="button" id="import-workbook">Import workbook</button>` : ""}
     </div>
     <p class="quiet" id="import-result">${current ? `${current.code} is selected at version ${current.version || 0}.` : "Select a record to see its versions."}</p>
   </div>
   <div class="pane" style="margin-top:12px;" id="version-list"><p class="quiet">Version history loads for the selected record.</p></div>`;
 }
 
+function actor() {
+  return { email: state.session?.email || "", role: state.session?.role || "" };
+}
+
+function waitingForRole() {
+  const role = state.session?.role || "";
+  return projectItems().filter((item) => item.status === "In review" && (item.reviewerRole === role || (role === "trade" && item.tradeSensitive)));
+}
+
 function form(item) {
-  const actor = { email: state.session?.email || "", role: state.session?.role || item.reviewerRole };
-  const block = item.status === "Approved" ? "" : approvalBlock(actor, item);
+  const access = recordAccess(actor(), item);
+  const block = approvalBlock(actor(), item);
   const updates = item.updates.map((update) => `<p class="quiet">${esc(update.role || "team")}: ${esc(update.text)}</p>`).join("");
-  return `<form class="form" id="review-form">
+  const facts = `<p><strong>Vendor.</strong> ${esc(item.supplier || "Not recorded")}</p><p><strong>Part.</strong> ${esc(item.sourceItem || "Not recorded")}</p><p><strong>Action.</strong> ${esc(item.action || "Not set")}</p><p><strong>Evidence.</strong> ${esc(item.evidence || "Not recorded")}</p><p><strong>Lifecycle.</strong> ${esc(item.lifecycle || "Not recorded")}</p>`;
+  const buttons = `${access.canSave ? `<button class="primary" type="submit">Save change</button>` : ""}
+      ${access.canSend ? `<button type="button" data-status="In review">Send to review</button>` : ""}
+      ${access.canReturn ? `<button type="button" data-status="Returned">Return</button>` : ""}
+      ${access.canApprove ? `<button type="button" data-status="Approved">Approve</button>` : ""}`;
+  return `<form class="form" id="review-form" data-mode="${esc(access.mode)}">
     <p class="label">${esc(item.code)} · version ${esc(item.version || 0)} · ${esc(item.stage)} · ${esc(item.layer)}${item.sourceCategory ? ` · source category ${esc(item.sourceCategory)}` : ""}</p>
-    <div class="row-actions">
-      <button class="primary" type="submit">Save change</button>
-      <button type="button" data-status="In review">Send to review</button>
-      <button type="button" data-status="Returned">Return</button>
-      <button type="button" data-status="Approved">Approve</button>
-    </div>
-    ${state.session?.email && block ? `<p class="block">${esc(block)}</p>` : `<p class="ok">A different role approves. A missing fact keeps confidence pending and does not change risk.</p>`}
-    <label class="field">Title <input name="title" value="${esc(item.title)}" /></label>
+    <p class="locked-note">${esc(access.message)}</p>
+    <div class="row-actions">${buttons || `<button type="button" data-open="analysis">Open analysis</button>`}</div>
+    ${access.canApprove && block ? `<p class="block">${esc(block)}</p>` : ""}
+    ${access.mode === "prepare" ? `<label class="field">Title <input name="title" value="${esc(item.title)}" /></label>
     <div class="grid-2">
       <label class="field">Layer <select name="layer">${options(LAYERS, item.layer)}</select></label>
       <label class="field">Stage <select name="stage">${options(STAGES, item.stage)}</select></label>
-      <label class="field">Owner role <select name="ownerRole">${options(["nstt", "cpi", "trade"], item.ownerRole)}</select></label>
-      <label class="field">Reviewer role <select name="reviewerRole">${options(["nstt", "cpi", "trade"], item.reviewerRole)}</select></label>
       <label class="field">Risk <select name="risk">${options(RISK, item.risk)}</select></label>
       <label class="field">Confidence <select name="confidence">${options(CONFIDENCE, item.confidence)}</select></label>
       <label class="field">Action <select name="action"><option value="">Not set</option>${options(ACTIONS, item.action)}</select></label>
-      <label class="field">Status <select name="status">${options(STATUSES, item.status)}</select></label>
       <label class="field">Project <select name="projectId">${options(state.projects.map((project) => project.code), item.projectId || "MDC")}</select></label>
       <label class="field">Vendor <input name="supplier" value="${esc(item.supplier || "")}" /></label>
       <label class="field">Part code <input name="sourceItem" value="${esc(item.sourceItem || "")}" /></label>
       <label class="field">Drawing <input name="drawing" value="${esc(item.drawing || "")}" /></label>
     </div>
+    <p class="quiet">Owner role stays ${esc(item.ownerRole)}. Reviewer role stays ${esc(item.reviewerRole)}. Those assignments are not changed from this form.</p>
     <label class="field">Condition <textarea name="condition">${esc(item.condition)}</textarea></label>
     <label class="field">Future policy and lifecycle <textarea name="lifecycle">${esc(item.lifecycle)}</textarea></label>
     <label class="field">Evidence <textarea name="evidence">${esc(item.evidence)}</textarea></label>
     <label class="field">Open fact <textarea name="openFact">${esc(item.openFact)}</textarea></label>
-    <label class="field"><span>Trade sensitive</span> <input name="tradeSensitive" type="checkbox" ${item.tradeSensitive ? "checked" : ""} /></label>
-    <label class="field">Team update <textarea name="update" placeholder="What changed?"></textarea></label>
+    <label class="field"><span>Trade sensitive</span> <input name="tradeSensitive" type="checkbox" ${item.tradeSensitive ? "checked" : ""} /></label>` : `<p><strong>Title.</strong> ${esc(item.title || "Not recorded")}</p>${facts}`}
+    ${access.canNote ? `<label class="field">Review note <textarea name="update" placeholder="What did you check?"></textarea></label>` : ""}
     ${updates}
   </form>`;
 }
@@ -314,17 +341,18 @@ function form(item) {
 function readForm(formElement, item) {
   const data = new FormData(formElement);
   const update = String(data.get("update") || "").trim();
-  const next = normalizeReview({
+  const mode = formElement.dataset.mode;
+  const next = mode === "prepare" ? normalizeReview({
     ...item,
     title: data.get("title"),
     layer: data.get("layer"),
     stage: data.get("stage"),
-    ownerRole: data.get("ownerRole"),
-    reviewerRole: data.get("reviewerRole"),
+    ownerRole: item.ownerRole,
+    reviewerRole: item.reviewerRole,
     risk: data.get("risk"),
     confidence: data.get("confidence"),
     action: data.get("action"),
-    status: data.get("status"),
+    status: item.status,
     condition: data.get("condition"),
     lifecycle: data.get("lifecycle"),
     evidence: data.get("evidence"),
@@ -335,7 +363,7 @@ function readForm(formElement, item) {
     drawing: data.get("drawing"),
     tradeSensitive: data.get("tradeSensitive") === "on",
     preparedBy: item.preparedBy || state.session?.email || "",
-  });
+  }) : normalizeReview(item);
   if (update) {
     next.updates = [...item.updates, {
       at: new Date().toISOString(),
@@ -467,6 +495,19 @@ function bind() {
       render();
     });
   });
+  main.querySelectorAll("[data-wizard-step]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.wizardStep = Number(button.dataset.wizardStep) || 0;
+      render();
+    });
+  });
+  main.querySelectorAll("[data-wizard]").forEach((button) => {
+    button.addEventListener("click", () => wizardAction(button.dataset.wizard));
+  });
+  const wizardForm = document.querySelector("#wizard-form");
+  if (wizardForm) wizardForm.addEventListener("submit", (event) => saveWizardStep(event, wizardForm));
+  const grantForm = document.querySelector("#grant-form");
+  if (grantForm) grantForm.addEventListener("submit", grantRole);
   main.querySelectorAll("[data-open]").forEach((button) => {
     button.addEventListener("click", () => {
       state.selected = button.dataset.code;
@@ -553,7 +594,7 @@ async function loadVersions() {
   const body = await response.json();
   const versions = body.versions || [];
   target.innerHTML = versions.length
-    ? `<p class="label">Versions for ${esc(current.code)}</p>${versions.map((version) => `<p>${esc(version.version)}. ${esc(version.savedBy)} · ${esc(version.changeNote || "Saved")}</p><button type="button" data-restore="${esc(version.version)}">Restore as a new version</button>`).join("")}`
+    ? `<p class="label">Versions for ${esc(current.code)}</p>${versions.map((version) => `<p>Version ${esc(version.version)}. ${esc(version.changeNote || "Saved")}</p>${state.session?.role === current.ownerRole && current.status !== "Approved" ? `<button type="button" data-restore="${esc(version.version)}">Restore as a new version</button>` : ""}`).join("")}`
     : `<p>No saved versions yet for ${esc(current.code)}.</p>`;
   target.querySelectorAll("[data-restore]").forEach((button) => {
     button.addEventListener("click", () => restoreVersion(button.dataset.restore));
@@ -592,10 +633,133 @@ function exportRegister() {
 
 document.querySelectorAll(".nav").forEach((button) => {
   button.addEventListener("click", () => {
+    if (button.dataset.view === "analysis" && state.view !== "analysis") {
+      state.wizardStep = 0;
+      if (state.session?.administrator) loadGrants().then(() => { if (state.view === "analysis") render(); });
+    }
     state.view = button.dataset.view;
     render();
   });
 });
+
+function syncRoleControls() {
+  const prepare = state.session?.role === "nstt";
+  const add = document.querySelector("#add-record");
+  const method = document.querySelector("#load-method");
+  if (add) {
+    add.disabled = !prepare;
+    add.title = prepare ? "Start a new analysis record." : "Only the NSTT role can start an analysis record.";
+  }
+  if (method) {
+    method.disabled = !prepare;
+    method.title = prepare ? "Start the method checklist." : "Only the NSTT role can start the method checklist.";
+  }
+}
+
+function wizardLimit() {
+  return Math.max(0, analysisSteps(state.session?.role || "", selected()).length - 1);
+}
+
+async function wizardAction(action) {
+  if (action === "prev") state.wizardStep = Math.max(0, state.wizardStep - 1);
+  if (action === "next") state.wizardStep = Math.min(wizardLimit(), state.wizardStep + 1);
+  if (action === "prev" || action === "next") {
+    render();
+    return;
+  }
+  if (action === "start") {
+    await startAnalysis();
+    return;
+  }
+  const current = selected();
+  if (!current) {
+    setNotice("Select a record before this step.");
+    return;
+  }
+  const next = normalizeReview(current);
+  if (action === "send") next.status = "In review";
+  if (action === "return") next.status = "Returned";
+  if (action === "approve") next.status = "Approved";
+  const block = action === "approve" ? approvalBlock(actor(), next) : "";
+  if (block) {
+    setNotice(block);
+    return;
+  }
+  replace(next);
+  await persist(next);
+}
+
+async function saveWizardStep(event, formElement) {
+  event.preventDefault();
+  const current = selected();
+  if (!current) return;
+  const data = new FormData(formElement);
+  const update = String(data.get("update") || "").trim();
+  const next = normalizeReview(current);
+  for (const [key, value] of data.entries()) {
+    if (key === "update") continue;
+    next[key] = value;
+  }
+  if (update) {
+    next.updates = [...current.updates, {
+      at: new Date().toISOString(),
+      by: state.session?.email || "",
+      role: state.session?.role || "",
+      text: update,
+    }];
+  }
+  const saved = normalizeReview(next);
+  saved.updates = next.updates;
+  replace(saved);
+  await persist(saved);
+}
+
+async function startAnalysis() {
+  if (state.session?.role !== "nstt") {
+    setNotice("Only the NSTT role can start an analysis record.");
+    return;
+  }
+  const item = normalizeReview({
+    code: nextCode(state.items),
+    title: "New review",
+    ownerRole: "nstt",
+    reviewerRole: "cpi",
+    projectId: state.project,
+    stage: "Why",
+    layer: "Identification",
+  });
+  state.items = [...state.items, item];
+  state.selected = item.code;
+  state.view = "analysis";
+  state.wizardStep = 0;
+  render();
+  const saved = await persist(item);
+  if (!saved) {
+    state.items = state.items.filter((row) => row.code !== item.code);
+    state.selected = "";
+    render();
+  }
+}
+
+async function grantRole(event) {
+  event.preventDefault();
+  const body = Object.fromEntries(new FormData(event.currentTarget).entries());
+  const result = await postJson("/api/access/grants", body);
+  if (!result.ok) {
+    setNotice(result.payload.message || "The grant was not saved.");
+    return;
+  }
+  await loadGrants();
+  setNotice("The role is granted for this environment only. Production is unchanged.");
+  render();
+}
+
+async function loadGrants() {
+  const response = await fetch("/api/access/grants", { credentials: "include", cache: "no-store" });
+  if (!response.ok) return;
+  const body = await response.json();
+  state.grants = Array.isArray(body.grants) ? body.grants.filter((grant) => !grant.revokedAt) : [];
+}
 
 function syncProjectSelect() {
   const select = document.querySelector("#project");
@@ -628,6 +792,10 @@ document.querySelector("#client-toggle").addEventListener("click", () => {
 });
 
 document.querySelector("#add-record").addEventListener("click", async () => {
+  if (state.session?.role !== "nstt") {
+    setNotice("Only the NSTT role can start an analysis record.");
+    return;
+  }
   const item = normalizeReview({ code: nextCode(state.items), title: "New review", ownerRole: "nstt", reviewerRole: "cpi", projectId: state.project });
   state.items = [...state.items, item];
   state.selected = item.code;
@@ -637,6 +805,10 @@ document.querySelector("#add-record").addEventListener("click", async () => {
 });
 
 document.querySelector("#load-method").addEventListener("click", async () => {
+  if (state.session?.role !== "nstt") {
+    setNotice("Only the NSTT role can start the method checklist.");
+    return;
+  }
   const existing = new Set(state.items.map((item) => item.code));
   const additions = methodChecklist().filter((item) => !existing.has(item.code));
   state.items = [...state.items, ...additions];
@@ -652,6 +824,11 @@ document.addEventListener("keydown", (event) => {
   const views = ["queue", "cards", "metrics", "outputs", "duties", "updates"];
   if (event.key >= "1" && event.key <= "6") {
     state.view = views[Number(event.key) - 1];
+    render();
+    return;
+  }
+  if (state.view === "analysis" && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
+    state.wizardStep = event.key === "ArrowRight" ? Math.min(wizardLimit(), state.wizardStep + 1) : Math.max(0, state.wizardStep - 1);
     render();
     return;
   }

@@ -95,11 +95,11 @@ export function drawOwner(items, client) {
     </table>
   </div>
   <div class="cards" style="margin-top:12px;">
-    ${rows.map((row) => `<article class="card"><p class="label">${esc(ROLE_LABEL[row.role])} preparers</p>${row.preparers.length ? row.preparers.slice(0, 6).map((person) => `<p>${client ? "Preparer" : esc(person.email)} <span class="quiet">${person.open} still open of ${person.records}</span></p>`).join("") : "<p>No records for this owner role.</p>"}</article>`).join("")}
+    ${rows.map((row) => `<article class="card"><p class="label">${esc(ROLE_LABEL[row.role])} preparers</p>${row.preparers.length ? row.preparers.slice(0, 6).map((person) => `<p>Preparer <span class="quiet">${person.open} still open of ${person.records}</span></p>`).join("") : "<p>No records for this owner role.</p>"}</article>`).join("")}
   </div>`;
 }
 
-export function drawLibrary(items, saved, projectId, query, client) {
+export function drawLibrary(items, saved, projectId, query, client, role = "") {
   const library = buildLibrary(items, saved.vendors || [], saved.parts || [], projectId);
   const text = query.trim().toLowerCase();
   const vendors = library.vendors.filter((row) => !text || `${row.name} ${row.country} ${row.identifier}`.toLowerCase().includes(text));
@@ -109,7 +109,7 @@ export function drawLibrary(items, saved, projectId, query, client) {
   return `<div class="pane sentences">
     <p class="label">Libraries</p>
     <p>${library.vendors.length} vendor names and ${library.parts.length} parts are in this environment. Current evaluations below are for the selected project. A saved name stays in the library before a review exists.</p>
-    <form class="form" id="vendor-form">
+    ${role === "administrator" || role === "nstt" ? `<form class="form" id="vendor-form">
       <div class="grid-2">
         <label class="field">Vendor name <input name="name" required /></label>
         <label class="field">Country <input name="country" /></label>
@@ -126,7 +126,7 @@ export function drawLibrary(items, saved, projectId, query, client) {
         <label class="field">Vendor name <input name="vendorName" /></label>
       </div>
       <div class="row-actions"><button type="submit">Add part</button></div>
-    </form>
+    </form>` : `<p>Only NSTT or an administrator can add a library name. Your role can read the library.</p>`}
   </div>
   <h2 class="section-title">Vendor names</h2>
   <p class="quiet">Showing ${Math.min(24, vendors.length)} of ${vendors.length}.</p>
@@ -170,20 +170,20 @@ export function drawSources(status, results, client) {
   ${client ? "" : `<div class="cards" style="margin-top:12px;">${(results || []).map((item) => `<article class="card"><p class="label">${esc(item.source)}</p><span class="pill grey">${esc(item.status)}</span><p>${esc(item.summary)}</p><p class="quiet">Observed ${esc(item.observedAt || "")}</p></article>`).join("") || `<article class="card"><p>No check yet. Enter a vendor or part name.</p></article>`}</div>`}`;
 }
 
-export function drawProjects(projects, current) {
+export function drawProjects(projects, current, role = "") {
   const rows = projects?.length ? projects : [BUILT_IN_PROJECT];
   return `<div class="pane sentences">
     <p class="label">Projects</p>
     <p>The current register stays on ${esc(BUILT_IN_PROJECT.name)}. A new project starts empty. Move a record only by saving it into the new project. That save creates a new version.</p>
     <p>Selected project: ${esc(rows.find((item) => item.code === current)?.name || current)}.</p>
-    <form class="form" id="project-form">
+    ${role === "administrator" ? `<form class="form" id="project-form">
       <div class="grid-2">
         <label class="field">Project code <input name="code" placeholder="POWER" required /></label>
         <label class="field">Project name <input name="name" required /></label>
       </div>
       <label class="field">Note <input name="note" /></label>
       <div class="row-actions"><button class="primary" type="submit">Create project</button></div>
-    </form>
+    </form>` : `<p>Only an administrator can create a project. You can open a project that already exists.</p>`}
   </div>
   <div class="cards" style="margin-top:12px;">
     ${rows.map((project) => `<article class="card"><p class="label">${esc(project.code)}</p><h2 style="font-size:16px;margin:4px 0 8px;">${esc(project.name)}</h2><p>${esc(project.status || "Active")}${project.builtIn ? ". Built in." : ""}</p><button type="button" data-project="${esc(project.code)}">Open project</button></article>`).join("")}
