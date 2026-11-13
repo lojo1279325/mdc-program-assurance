@@ -1,3 +1,5 @@
+import { executiveSlides, slideNotes } from "./presentation-model.js";
+
 const CRC_TABLE = new Uint32Array(256);
 for (let index = 0; index < 256; index += 1) {
   let value = index;
@@ -74,29 +76,32 @@ function zipStore(files) {
   return output;
 }
 
-function paragraph(text, size, bold = false, color = "1B1E24") {
-  return `<a:p><a:r><a:rPr lang="en-US" sz="${size}" b="${bold ? 1 : 0}" dirty="0"><a:solidFill><a:srgbClr val="${color}"/></a:solidFill><a:latin typeface="Calibri"/></a:rPr><a:t>${xml(text)}</a:t></a:r></a:p>`;
+function paragraph(text, size = 12, bold = false, color = "1B1E24", align = "l") {
+  const points = Math.round(size * 100);
+  return `<a:p><a:pPr algn="${align}"><a:lnSpc><a:spcPts val="${Math.round(size * 112)}"/></a:lnSpc><a:spcBef><a:spcPts val="0"/></a:spcBef><a:spcAft><a:spcPts val="0"/></a:spcAft></a:pPr><a:r><a:rPr lang="en-US" sz="${points}" b="${bold ? 1 : 0}" dirty="0"><a:solidFill><a:srgbClr val="${color}"/></a:solidFill><a:latin typeface="Arial"/></a:rPr><a:t>${xml(text)}</a:t></a:r><a:endParaRPr lang="en-US" sz="${points}"/></a:p>`;
 }
 
-function textBox(id, name, x, y, cx, cy, paragraphs) {
-  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${name}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr><p:txBody><a:bodyPr wrap="square" lIns="0" tIns="0" rIns="0" bIns="0"/><a:lstStyle/>${paragraphs}</p:txBody></p:sp>`;
+function nativeShape(shape, index) {
+  const emu = (value) => Math.round(value * 914400);
+  const id = index + 2;
+  const isText = shape.type === "text";
+  const transform = `<a:xfrm${shape.rotation ? ` rot="${Math.round(shape.rotation * 60000)}"` : ""}${shape.flipH ? ' flipH="1"' : ""}${shape.flipV ? ' flipV="1"' : ""}><a:off x="${emu(shape.x)}" y="${emu(shape.y)}"/><a:ext cx="${emu(shape.w)}" cy="${emu(shape.h)}"/></a:xfrm>`;
+  const geometry = `<a:prstGeom prst="${isText ? "rect" : shape.type}"><a:avLst/></a:prstGeom>`;
+  const fill = !isText && shape.fill ? `<a:solidFill><a:srgbClr val="${shape.fill}"/></a:solidFill>` : "<a:noFill/>";
+  const line = !isText && shape.stroke ? `<a:ln w="${Math.round((shape.strokeWidth || 1) * 12700)}"><a:solidFill><a:srgbClr val="${shape.stroke}"/></a:solidFill></a:ln>` : "<a:ln><a:noFill/></a:ln>";
+  const text = isText ? `<p:txBody><a:bodyPr wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="${shape.valign || "t"}"><a:noAutofit/></a:bodyPr><a:lstStyle/>${shape.lines.map((value) => paragraph(value, shape.size, shape.bold, shape.color, shape.align || "l")).join("")}</p:txBody>` : "";
+  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${isText ? "Text" : "Graphic"} ${xml(shape.slot || id)}"/><p:cNvSpPr${isText ? ' txBox="1"' : ""}/><p:nvPr/></p:nvSpPr><p:spPr>${transform}${geometry}${fill}${line}</p:spPr>${text}</p:sp>`;
 }
 
-function bar(id) {
-  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Bar"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="12192000" cy="91440"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="01244A"/></a:solidFill><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p/></p:txBody></p:sp>`;
-}
-
-function slideXml(slide, index, total) {
-  const lines = [slide.kicker, ...slide.lines, ...slide.rows.map((row) => [row.code, row.title, row.action, row.text].filter(Boolean).join(". "))].filter(Boolean);
-  const body = lines.slice(1).map((line) => paragraph(line, 1500, false, "1B1E24")).join("");
-  const shapes = [
-    bar(2),
-    textBox(3, "Title", 457200, 274320, 11277600, 640080, paragraph(slide.title, 2800, true, "01244A")),
-    textBox(4, "Body", 457200, 1005840, 11277600, 5029200, body),
-    textBox(5, "Footer", 457200, 6400800, 11277600, 274320, paragraph(`Draft for discussion. Generated from the current register. ${index} of ${total}.`, 1200, false, "5C6570")),
-  ].join("");
+function slideXml(slide) {
+  const shapes = slide.shapes.map(nativeShape).join("");
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>${shapes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`;
+}
+
+function notesXml(slide) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr><p:sp><p:nvSpPr><p:cNvPr id="2" name="Complete slide notes"/><p:cNvSpPr txBox="1"/><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/>${["Draft for discussion. Generated from the current selected-project register.", ...slideNotes(slide)].map((value) => paragraph(value)).join("")}</p:txBody></p:sp></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:notes>`;
 }
 
 const THEME = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -109,7 +114,7 @@ const LAYOUT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank" preserve="1"><p:cSld name="Blank"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>`;
 
 export function briefToPptx(brief) {
-  const slides = brief.slides?.length ? brief.slides : [{ title: "Decision support", kicker: "Draft for discussion", lines: ["This project has no review records."], rows: [] }];
+  const slides = executiveSlides(brief);
   const files = {
     "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/><Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/><Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>${slides.map((_, index) => `<Override PartName="/ppt/slides/slide${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`).join("")}</Types>`,
@@ -129,12 +134,15 @@ export function briefToPptx(brief) {
     "ppt/slideLayouts/slideLayout1.xml": LAYOUT,
     "ppt/slideLayouts/_rels/slideLayout1.xml.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/></Relationships>`,
-    "ppt/theme/theme1.xml": THEME,
+    "ppt/theme/theme1.xml": THEME.replaceAll("Calibri", "Arial"),
   };
+  files["[Content_Types].xml"] = files["[Content_Types].xml"].replace("</Types>", `${slides.map((_, index) => `<Override PartName="/ppt/notesSlides/notesSlide${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>`).join("")}</Types>`);
   slides.forEach((slide, index) => {
-    files[`ppt/slides/slide${index + 1}.xml`] = slideXml(slide, index + 1, slides.length);
+    files[`ppt/slides/slide${index + 1}.xml`] = slideXml(slide);
     files[`ppt/slides/_rels/slide${index + 1}.xml.rels`] = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/></Relationships>`;
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide${index + 1}.xml"/></Relationships>`;
+    files[`ppt/notesSlides/notesSlide${index + 1}.xml`] = notesXml(slide);
+    files[`ppt/notesSlides/_rels/notesSlide${index + 1}.xml.rels`] = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="../slides/slide${index + 1}.xml"/></Relationships>`;
   });
   return zipStore(files);
 }
