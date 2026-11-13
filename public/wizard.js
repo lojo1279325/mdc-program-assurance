@@ -1,5 +1,6 @@
-import { ACTIONS, CONFIDENCE, RISK, STAGES, approvalBlock } from "./rules.js";
+import { STAGES, approvalBlock } from "./rules.js";
 import { ROLE_LABEL, recordAccess, roleSummary } from "./privileges.js";
+import { fieldBox, guideBanner, knownValues } from "./guidance.js";
 
 const PREPARE_STEPS = [
   { id: "why", stage: "Why", title: "Why this part is in the review", body: "State why this part is in the review. A source category is not an action.", fields: ["title"] },
@@ -53,42 +54,20 @@ export function analysisSteps(role, record) {
   return PREPARE_STEPS;
 }
 
-function fieldControl(name, record) {
-  const value = record?.[name] ?? "";
-  if (name === "title" || name === "supplier" || name === "sourceItem" || name === "drawing" || name === "module") {
-    return `<label class="field">${esc(labelFor(name))} <input name="${name}" value="${esc(value)}" /></label>`;
-  }
-  if (name === "lifecycle" || name === "condition" || name === "evidence" || name === "openFact") {
-    return `<label class="field">${esc(labelFor(name))} <textarea name="${name}">${esc(value)}</textarea></label>`;
-  }
-  if (name === "action") {
-    return `<label class="field">Action <select name="action"><option value="">Not set</option>${ACTIONS.map((item) => `<option value="${esc(item)}" ${item === value ? "selected" : ""}>${esc(item)}</option>`).join("")}</select></label>`;
-  }
-  if (name === "risk") {
-    return `<label class="field">Risk <select name="risk">${RISK.map((item) => `<option value="${esc(item)}" ${item === value ? "selected" : ""}>${esc(item)}</option>`).join("")}</select></label>`;
-  }
-  if (name === "confidence") {
-    return `<label class="field">Confidence <select name="confidence">${CONFIDENCE.map((item) => `<option value="${esc(item)}" ${item === value ? "selected" : ""}>${esc(item)}</option>`).join("")}</select></label>`;
-  }
-  if (name === "layer") {
-    const layers = ["Identification", "Part significance", "Supply-chain resilience", "Governance", "Recommendation"];
-    return `<label class="field">Layer <select name="layer">${layers.map((item) => `<option value="${esc(item)}" ${item === value ? "selected" : ""}>${esc(item)}</option>`).join("")}</select></label>`;
-  }
-  return "";
-}
-
-function labelFor(name) {
-  return {
-    title: "Purpose",
-    supplier: "Vendor",
-    sourceItem: "Part code",
-    drawing: "Drawing",
-    module: "Where it is used",
-    lifecycle: "Future policy and lifecycle",
-    condition: "Condition",
-    evidence: "Evidence",
-    openFact: "Open fact",
-  }[name] || name;
+function fieldControl(name, record, known) {
+  const suggestKey = {
+    supplier: "vendors",
+    sourceItem: "parts",
+    drawing: "drawings",
+    module: "modules",
+  }[name];
+  return fieldBox({
+    key: name,
+    name,
+    value: record?.[name] ?? "",
+    suggestions: suggestKey ? known[suggestKey] || [] : [],
+    idPrefix: "wizard",
+  });
 }
 
 function factList(record) {
@@ -110,7 +89,7 @@ function factList(record) {
   return rows.map(([label, value]) => `<p><strong>${esc(label)}.</strong> ${esc(value)}</p>`).join("");
 }
 
-export function drawWizard({ role = "", step = 0, record = null, waiting = [], environment = "development", canGrant = false, grants = [], actorEmail = "" }) {
+export function drawWizard({ role = "", step = 0, record = null, waiting = [], environment = "development", canGrant = false, grants = [], actorEmail = "", items = [], library = {} }) {
   const steps = analysisSteps(role, record);
   const index = Math.min(Math.max(0, step), Math.max(0, steps.length - 1));
   const current = steps[index];
@@ -123,8 +102,9 @@ export function drawWizard({ role = "", step = 0, record = null, waiting = [], e
       : access.mode === "review" || reviewRole
         ? "review"
         : "locked";
+  const known = knownValues(items, library);
   const stepButtons = steps.map((item, itemIndex) => `<button type="button" class="${itemIndex === index ? "on" : ""}" data-wizard-step="${itemIndex}">${itemIndex + 1}. ${esc(item.title)}</button>`).join("");
-  let panel = `<p class="kicker">Step ${index + 1} of ${steps.length}${current.stage ? ` · ${esc(current.stage)}` : ""}</p><h2>${esc(current.title)}</h2><p>${esc(current.body)}</p>`;
+  let panel = `${guideBanner()}<p class="kicker">Step ${index + 1} of ${steps.length}${current.stage ? ` · ${esc(current.stage)}` : ""}</p><h2>${esc(current.title)}</h2><p>${esc(current.body)}</p>`;
   if (mode === "prepare") {
     if (reviewRole && !waiting.length) panel += `<p class="quiet">No record is waiting on ${esc(ROLE_LABEL[role] || role)} for review.</p>`;
     if (!record) {
@@ -132,14 +112,14 @@ export function drawWizard({ role = "", step = 0, record = null, waiting = [], e
     } else if (current.id === "handoff") {
       panel += `${factList(record)}<p>Assigned reviewer: ${esc(ROLE_LABEL[record.reviewerRole] || record.reviewerRole)}. ${record.tradeSensitive ? "This record is trade sensitive, so Trade must add a note before approval." : "Trade adds a note only when the record is trade sensitive."}</p><div class="row-actions"><button type="button" class="primary" data-wizard="send">Send to review</button></div>`;
     } else {
-      panel += `<form class="form" id="wizard-form"><div class="grid-2">${current.fields.map((field) => fieldControl(field, record)).join("")}</div><div class="row-actions"><button type="submit" class="primary">Save this step</button></div></form>`;
+      panel += `<form class="form" id="wizard-form"><div class="grid-2">${current.fields.map((field) => fieldControl(field, record, known)).join("")}</div><div class="row-actions"><button type="submit" class="primary">Save this step</button></div></form>`;
     }
   } else if (mode === "review") {
     const choices = waiting.slice(0, 12).map((item) => `<button type="button" class="item code-link" data-code="${esc(item.code)}" data-open="analysis">${esc(item.code)} ${esc(item.title || "Untitled")}</button>`).join("");
     panel += choices ? `<div class="pills">${choices}</div>` : `<p>No record is waiting on ${esc(ROLE_LABEL[role] || role)} in this project.</p>`;
     panel += factList(record);
     if (current.id === "note" && access.canNote) {
-      panel += `<form class="form" id="wizard-form"><label class="field">Review note <textarea name="update"></textarea></label><div class="row-actions"><button type="submit" class="primary">Save note</button></div></form>`;
+      panel += `<form class="form" id="wizard-form">${fieldBox({ key: "update", name: "update", idPrefix: "wizard" })}<div class="row-actions"><button type="submit" class="primary">Save note</button></div></form>`;
     }
     if (current.id === "decision") {
       const block = record ? approvalBlock({ role, email: actorEmail }, record) : "Select a record before approval.";
@@ -149,7 +129,7 @@ export function drawWizard({ role = "", step = 0, record = null, waiting = [], e
   } else {
     if (current.id === "grant") {
       panel += canGrant
-        ? `<form class="form" id="grant-form"><div class="grid-2"><label class="field">Email <input name="email" type="email" required /></label><label class="field">Role <select name="role"><option value="administrator">Administrator</option><option value="nstt">NSTT</option><option value="cpi">CPI</option><option value="trade">Trade</option></select></label></div><p class="quiet">This grant is saved for ${esc(environment)} only.</p><div class="row-actions"><button type="submit" class="primary">Grant role</button></div></form>`
+        ? `<form class="form" id="grant-form"><div class="grid-2">${fieldBox({ key: "grantEmail", name: "email", idPrefix: "grant", required: true, type: "email" })}${fieldBox({ key: "grantRole", name: "role", value: "nstt", idPrefix: "grant" })}</div><p class="quiet">This grant is saved for ${esc(environment)} only.</p><div class="row-actions"><button type="submit" class="primary">Grant role</button></div></form>`
         : `<p>Only a designated administrator can grant a role for this environment.</p>`;
       if (grants.length) {
         panel += `<ul class="grant-list">${grants.slice(0, 12).map((grant) => `<li>${esc(grant.email)} · ${esc(ROLE_LABEL[grant.role] || grant.role)}${grant.revokedAt ? " · revoked" : ""}</li>`).join("")}</ul>`;
