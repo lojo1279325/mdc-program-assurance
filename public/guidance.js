@@ -331,7 +331,7 @@ export function knownValues(items = [], library = {}) {
 }
 
 export function guideBanner() {
-  return `<p class="guide-banner">Hover Guide on a field to see what to enter. The line under the field is an example. A dropdown offers a standard choice or a known name. You can still type a value that is not on the list.</p><div class="color-key" aria-label="Action colors"><span class="pill green">Proceed</span><span class="pill yellow">Proceed with protections</span><span class="pill orange">Proceed with active mitigation</span><span class="pill red">Do not proceed absent resolution</span><span class="pill grey">Confidence stays grey</span></div>`;
+  return `<details class="field-help"><summary>Field help and action colors</summary><p>Open Guide beside a field for help. Examples show the type of information to enter. Known-name suggestions do not replace source verification.</p><div class="color-key" aria-label="Action colors"><span class="pill green">Proceed</span><span class="pill yellow">Proceed with protections</span><span class="pill orange">Proceed with active mitigation</span><span class="pill red">Do not proceed absent resolution</span><span class="pill grey">Confidence stays grey</span></div></details>`;
 }
 
 export function fieldBox({ key, name, value = "", suggestions = [], choices = null, idPrefix = "field", required = false, type = "text" }) {
@@ -352,18 +352,18 @@ export function fieldBox({ key, name, value = "", suggestions = [], choices = nu
   let control = "";
   if (guide.kind === "select") {
     const items = choices || guide.choices || [];
-    control = `<select name="${esc(fieldName)}" aria-describedby="${exampleId}">${items.map((item) => {
+    control = `<select name="${esc(fieldName)}" aria-label="${esc(guide.label)}"${requiredAttr} aria-describedby="${exampleId}">${items.map((item) => {
       const optionValue = typeof item === "object" ? item.value : item;
       const optionLabel = typeof item === "object" ? item.label : (guide.labels?.[optionValue] || optionValue || "Not set");
       return `<option value="${esc(optionValue)}" ${String(optionValue) === String(current) ? "selected" : ""}>${esc(optionLabel)}</option>`;
     }).join("")}</select>`;
   } else if (guide.kind === "note") {
     const starter = `<select data-fill="${esc(fieldName)}" aria-label="Standard note for ${esc(guide.label)}"><option value="">Choose a standard note, or write your own</option>${(guide.starters || []).map((item) => `<option value="${esc(item)}">${esc(item)}</option>`).join("")}</select>`;
-    control = `${starter}<textarea name="${esc(fieldName)}" aria-describedby="${exampleId}">${esc(current)}</textarea>`;
+    control = `${starter}<textarea name="${esc(fieldName)}" aria-label="${esc(guide.label)}"${requiredAttr} aria-describedby="${exampleId}">${esc(current)}</textarea>`;
   } else {
     const known = suggestions.length ? `<datalist id="${listId}">${suggestions.map((item) => `<option value="${esc(item)}"></option>`).join("")}</datalist>` : "";
     const listAttr = suggestions.length ? ` list="${listId}"` : "";
-    control = `<input name="${esc(fieldName)}" type="${esc(type)}" value="${esc(current)}"${listAttr}${requiredAttr} aria-describedby="${exampleId}" />${known}`;
+    control = `<input name="${esc(fieldName)}" aria-label="${esc(guide.label)}" type="${esc(type)}" value="${esc(current)}"${listAttr}${requiredAttr} aria-describedby="${exampleId}" />${known}`;
   }
   const tip = `<span class="field-tip" id="${tipId}" role="tooltip">${esc(guide.help)}</span>`;
   return `<div class="field tone-${esc(guide.tone || "note")}">${head}${control}${example}${tip}</div>`;

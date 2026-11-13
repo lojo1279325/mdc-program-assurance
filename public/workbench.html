@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/workbench.css" />
   </head>
   <body>
+    <a class="skip-link" href="#main">Skip to work area</a>
     <div class="app">
       <div class="sysbar">
         <span>System</span>
@@ -15,15 +16,16 @@
       </div>
       <header class="appbar">
         <div class="appbar-title">
-          <label class="menu-button" for="nav-toggle">
+          <button type="button" class="menu-button" id="nav-menu-button" aria-label="Navigation" aria-expanded="true" aria-controls="workbench-nav">
             <span class="menu-icon" aria-hidden="true"></span>
             <span class="visually-hidden">Navigation</span>
-          </label>
-          <p class="brand">MDC Program Assurance</p>
+          </button>
+          <p class="brand">MDC Program Assurance Workbench</p>
         </div>
         <div class="shell-search search field">
-          <span class="field-label">Search <button type="button" class="field-mark" aria-expanded="false" aria-describedby="search-tip">Guide</button></span>
-          <input id="search" type="search" aria-describedby="search-example" />
+          <label class="visually-hidden" for="search">Find a record or supplier</label>
+          <span class="field-label search-help">Search <button type="button" class="field-mark" aria-expanded="false" aria-describedby="search-tip">Guide</button></span>
+          <input id="search" type="search" placeholder="Find a record or supplier" aria-describedby="search-example" />
           <span class="field-example" id="search-example">Example: a record code or a vendor legal name.</span>
           <span class="field-tip" id="search-tip" role="tooltip">Search by record code, title, or vendor name. The list narrows as you type.</span>
         </div>
@@ -33,72 +35,86 @@
         </a>
       </header>
       <div class="shell">
-        <aside class="rail" aria-label="Navigation">
+        <aside class="rail" id="workbench-nav" aria-label="Navigation">
           <input id="nav-toggle" class="nav-toggle" type="checkbox" />
           <label class="nav-toggle-label" for="nav-toggle">Navigation</label>
           <p class="sitemap-area">Program assurance</p>
           <nav aria-label="Workbench">
-            <p class="sitemap-group">Work</p>
-            <button type="button" data-view="queue" class="nav on" id="nav-queue">Queue</button>
+            <button type="button" data-view="home" class="nav on" id="nav-home">Start here</button>
+            <p class="sitemap-group">Daily work</p>
             <button type="button" data-view="mine" class="nav" id="nav-mine">My work</button>
-            <button type="button" data-view="analysis" class="nav" id="nav-analysis">Analysis</button>
-            <button type="button" data-view="cards" class="nav" id="nav-cards">Review cards</button>
-            <p class="sitemap-group">Progress</p>
-            <button type="button" data-view="workflow" class="nav" id="nav-workflow">Workflow</button>
-            <button type="button" data-view="completion" class="nav" id="nav-completion">Completion</button>
-            <button type="button" data-view="owner" class="nav" id="nav-owner">Owner</button>
-            <button type="button" data-view="metrics" class="nav" id="nav-metrics">Metrics</button>
-            <p class="sitemap-group">Records</p>
-            <button type="button" data-view="library" class="nav" id="nav-library">Library</button>
-            <button type="button" data-view="vendors" class="nav" id="nav-vendors">Vendors</button>
-            <button type="button" data-view="sources" class="nav" id="nav-sources">Sources</button>
-            <button type="button" data-view="projects" class="nav" id="nav-projects">Projects</button>
-            <p class="sitemap-group">Outputs</p>
-            <button type="button" data-view="outputs" class="nav" id="nav-outputs">Outputs</button>
-            <button type="button" data-view="brief" class="nav" id="nav-brief">Brief</button>
+            <button type="button" data-view="analysis" class="nav" id="nav-analysis">Guided analysis</button>
+            <button type="button" data-view="queue" class="nav" id="nav-queue">Review queue</button>
+            <button type="button" data-view="workflow" class="nav" id="nav-workflow">Progress</button>
+            <p class="sitemap-group">Decision outputs</p>
+            <button type="button" data-view="brief" class="nav" id="nav-brief">Decision brief</button>
             <button type="button" data-view="present" class="nav" id="nav-present">Presentation</button>
-            <button type="button" data-view="duties" class="nav" id="nav-duties">Duties</button>
-            <button type="button" data-view="updates" class="nav" id="nav-updates">Updates</button>
+            <button type="button" data-view="vendors" class="nav" id="nav-vendors">Vendor map</button>
+            <details class="nav-more">
+              <summary>More tools</summary>
+              <button type="button" data-view="cards" class="nav" id="nav-cards">Review cards</button>
+              <button type="button" data-view="completion" class="nav" id="nav-completion">Completion</button>
+              <button type="button" data-view="owner" class="nav" id="nav-owner">Owners</button>
+              <button type="button" data-view="metrics" class="nav" id="nav-metrics">Metrics</button>
+              <button type="button" data-view="library" class="nav" id="nav-library">Library</button>
+              <button type="button" data-view="sources" class="nav" id="nav-sources">Sources</button>
+              <button type="button" data-view="projects" class="nav" id="nav-projects">Projects</button>
+              <button type="button" data-view="outputs" class="nav" id="nav-outputs">Register exports</button>
+              <button type="button" data-view="duties" class="nav" id="nav-duties">Roles and practice</button>
+              <button type="button" data-view="updates" class="nav" id="nav-updates">Import and versions</button>
+            </details>
           </nav>
         </aside>
         <section class="workspace">
           <div class="pagehead">
             <div class="pagehead-title">
-              <h1 id="view-title">Queue</h1>
-              <p id="notice" class="quiet">Loading the development workspace.</p>
+              <h1 id="view-title" tabindex="-1">Start here</h1>
+              <p id="notice" class="quiet" role="status">Loading the development workspace.</p>
             </div>
             <div class="command-actions" aria-label="Commands">
-              <button type="button" id="add-record" class="primary">New</button>
-              <button type="button" id="load-practice" class="ghost" hidden>Load practice records</button>
-              <button type="button" id="load-method" class="ghost">Method checklist</button>
+              <button type="button" id="add-record" class="ghost" hidden>New analysis</button>
               <button type="button" id="client-toggle" class="ghost">Client view</button>
+              <details class="more-actions" id="more-actions">
+                <summary>More actions</summary>
+                <div class="more-actions-menu">
+                  <button type="button" id="load-practice" class="ghost" hidden>Load practice records</button>
+                  <button type="button" id="load-method" class="ghost" hidden>Method checklist</button>
+                </div>
+              </details>
             </div>
           </div>
           <div class="filterbar" aria-label="Filters">
-            <p class="filter-label">Filters</p>
             <div class="command-filters">
               <div class="search field">
                 <span class="field-label">Project <button type="button" class="field-mark" aria-expanded="false" aria-describedby="project-tip">Guide</button></span>
-                <select id="project" aria-describedby="project-example"></select>
+                <select id="project" aria-label="Project" aria-describedby="project-example"></select>
                 <span class="field-example" id="project-example">Example: MDC for the current register.</span>
                 <span class="field-tip" id="project-tip" role="tooltip">Choose the project whose records you want to see. A new project starts empty and does not move the current register.</span>
               </div>
               <div class="search field" id="practice-wrap" hidden>
-                <span class="field-label">Practice role</span>
+                <label class="field-label" for="practice-role">Practice as</label>
                 <select id="practice-role" aria-describedby="practice-example">
                   <option value="">Administrator</option>
                   <option value="nstt">NSTT</option>
                   <option value="cpi">CPI</option>
                   <option value="trade">Trade</option>
                 </select>
-                <span class="field-example" id="practice-example">Development only. This does not change your administrator grant.</span>
+                <span class="field-example" id="practice-example">Development only. Your administrator grant stays unchanged.</span>
               </div>
             </div>
+            <p class="context-role" id="context-role"></p>
           </div>
-          <main id="main"></main>
+          <main id="main" tabindex="-1"></main>
         </section>
       </div>
     </div>
+    <dialog id="unsaved-dialog" aria-labelledby="unsaved-title">
+      <form method="dialog">
+        <h2 id="unsaved-title">Keep your unsaved changes?</h2>
+        <p>This step has changes that are not saved. Keep editing to save them, or discard them and leave.</p>
+        <div class="row-actions"><button value="stay" class="primary" autofocus>Keep editing</button><button value="discard" class="ghost">Discard changes</button></div>
+      </form>
+    </dialog>
     <script type="module" src="/workbench.js"></script>
   </body>
 </html>

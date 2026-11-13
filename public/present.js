@@ -6,24 +6,13 @@ function esc(value) {
     .replaceAll("\"", "&quot;");
 }
 
-function shortName(value) {
-  const text = String(value || "");
-  return text.length > 18 ? `${text.slice(0, 17)}...` : text;
-}
-
 function bars(rows, label) {
   const max = Math.max(1, ...rows.map((row) => row.value));
-  const height = 28 + rows.length * 36;
-  const body = rows.map((row, index) => {
-    const y = 18 + index * 36;
-    const width = Math.max(8, Math.round((row.value / max) * 280));
-    return `<g>
-      <text x="0" y="${y + 14}" fill="#1B1E24" font-size="13" font-family="IBM Plex Sans, Segoe UI, sans-serif">${esc(shortName(row.label))}</text>
-      <rect x="250" y="${y}" width="${width}" height="16" rx="3" fill="${row.color || "#01244A"}"></rect>
-      <text x="${258 + width}" y="${y + 13}" fill="#5C6570" font-size="13" font-family="IBM Plex Sans, Segoe UI, sans-serif">${esc(row.value)}</text>
-    </g>`;
-  }).join("");
-  return `<svg class="map-picture" viewBox="0 0 620 ${height}" role="img" aria-label="${esc(label)}">${body}</svg>`;
+  return `<div class="presentation-bars" role="img" aria-label="${esc(label)}">${rows.map((row) => `
+    <div class="presentation-bar">
+      <div class="bar-caption"><span>${esc(row.label)}</span><strong>${esc(row.value)}</strong></div>
+      <div class="bar-track"><span style="width:${Math.round((row.value / max) * 100)}%;background:${row.color || "#01244A"}"></span></div>
+    </div>`).join("")}</div>`;
 }
 
 function metric(value, label) {
@@ -55,7 +44,7 @@ export function presentationSlides(brief) {
       id: "ready",
       title: "What is ready",
       picture: `<div class="present-sheet">
-        <h2>No approved record is available for a decision</h2>
+        <h2>${brief.approved ? `${esc(brief.approved)} approved ${brief.approved === 1 ? "record is" : "records are"} available for a decision` : "No approved record is available for a decision"}</h2>
         <div class="present-metrics">
           ${metric(brief.records || 0, "Review records")}
           ${metric(brief.approved || 0, "Approved")}
@@ -120,7 +109,7 @@ export function drawPresentation(brief, slideIndex) {
   const slides = presentationSlides(brief);
   const index = Math.min(Math.max(0, slideIndex || 0), slides.length - 1);
   const slide = slides[index];
-  const previews = slides.map((item, itemIndex) => `<button type="button" class="preview ${itemIndex === index ? "on" : ""}" data-slide-index="${itemIndex}" aria-label="Preview ${itemIndex + 1}. ${esc(item.title)}">
+  const previews = slides.map((item, itemIndex) => `<button type="button" class="preview ${itemIndex === index ? "on" : ""}" data-slide-index="${itemIndex}" ${itemIndex === index ? 'aria-current="true"' : ""} aria-label="Preview ${itemIndex + 1}. ${esc(item.title)}">
     <span class="preview-picture" aria-hidden="true">${item.picture}</span>
     <span>${itemIndex + 1}. ${esc(item.title)}</span>
   </button>`).join("");

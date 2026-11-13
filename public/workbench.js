@@ -22,14 +22,16 @@ import { decisionBrief, vendorMap, vendorMapCsv } from "./brief.js";
 import { drawBrief, drawVendorMap } from "./briefview.js";
 import { drawPresentation, presentationSlides } from "./present.js";
 import { briefToPptx } from "./pptx.js";
-import { recordAccess } from "./privileges.js";
+import { recordAccess, ROLE_LABEL } from "./privileges.js";
 import { analysisRecord, analysisSteps, drawWizard } from "./wizard.js";
 import { fieldBox, guideBanner, knownValues } from "./guidance.js";
+import { drawPracticeGuide } from "./practiceguide.js";
+import { drawStart, drawRecordPath } from "./experience.js";
 
 const state = {
   items: [],
   selected: "",
-  view: "queue",
+  view: "home",
   query: "",
   client: false,
   session: null,
@@ -42,21 +44,26 @@ const state = {
   wizardStep: 0,
   practiceRole: "",
   grants: [],
+  statusFilter: "all",
+  dirty: false,
+  saving: false,
+  pendingNavigation: null,
   notice: "This is the development workspace. Production is unchanged. A granted role is required before a record is stored.",
 };
 
 const titles = {
-  analysis: "Analysis",
-  queue: "Queue",
+  home: "Start here",
+  analysis: "Guided analysis",
+  queue: "Review queue",
   cards: "Review cards",
   metrics: "Metrics",
   outputs: "Outputs",
   brief: "Decision brief",
   present: "Presentation",
   vendors: "Vendor map",
-  duties: "Separation of duties",
+  duties: "Roles and practice",
   updates: "Import and versions",
-  workflow: "Workflow",
+  workflow: "Progress",
   completion: "Completion",
   mine: "My work",
   owner: "Owner",
@@ -111,6 +118,8 @@ function downloadFile(bytes, name, type) {
 function visibleItems() {
   const query = state.query.trim().toLowerCase();
   return projectItems().filter((item) => {
+    if (state.statusFilter === "preparing" && item.status !== "Open" && item.status !== "Returned") return false;
+    if (state.statusFilter !== "all" && state.statusFilter !== "preparing" && item.status !== state.statusFilter) return false;
     if (!query) return true;
     return `${item.code} ${item.title} ${item.layer} ${item.action} ${item.supplier || ""}`.toLowerCase().includes(query);
   });
@@ -126,14 +135,69 @@ function setNotice(text) {
   notice.textContent = text;
 }
 
+function leaveForm(next) {
+  if (state.saving) {
+    setNotice("The save is still running. Wait for confirmation before leaving.");
+    return;
+  }
+  if (!state.dirty) {
+    next();
+    return;
+  }
+  state.pendingNavigation = next;
+  const dialog = document.querySelector("#unsaved-dialog");
+  dialog.returnValue = "";
+  document.querySelector("#more-actions").open = false;
+  dialog.showModal();
+}
+
+function scrollWorkToTop() {
+  main.scrollTop = 0;
+  document.querySelector(".workspace").scrollTop = 0;
+}
+
+function goTo(view, { code, step } = {}) {
+  leaveForm(() => {
+    if (view === "analysis") {
+      state.query = "";
+      state.statusFilter = "all";
+      document.querySelector("#search").value = "";
+      state.selected = code || analysisRecord(actingRole(), projectItems(), state.selected)?.code || "";
+      state.wizardStep = step ?? 0;
+      if (actingRole() === "administrator") loadGrants().then(() => { if (state.view === "analysis") render(); });
+    } else if (code) {
+      state.selected = code;
+    }
+    state.view = view;
+    document.querySelector("#nav-toggle").checked = false;
+    render();
+    scrollWorkToTop();
+    title.focus({ preventScroll: true });
+  });
+}
+
 function render() {
+  document.querySelector("#more-actions").open = false;
   title.textContent = titles[state.view];
   notice.textContent = state.notice;
   document.querySelectorAll(".nav").forEach((button) => {
     button.classList.toggle("on", button.dataset.view === state.view);
+    if (button.dataset.view === state.view) {
+      button.setAttribute("aria-current", "page");
+      const group = button.closest("details");
+      if (group) group.open = true;
+    } else button.removeAttribute("aria-current");
   });
   document.querySelector("#client-toggle").textContent = state.client ? "Internal view" : "Client view";
   const draw = {
+    home: () => drawStart({
+      actor: actor(),
+      items: projectItems(),
+      projectName: state.projects.find((project) => project.code === state.project)?.name || state.project,
+      practice: Boolean(state.practiceRole),
+      canPractice: practiceAllowed(),
+      signedIn: state.session?.state === "granted",
+    }),
     queue: drawQueue,
     cards: drawCards,
     metrics: () => drawMetrics(projectItems()),
@@ -142,7 +206,7 @@ function render() {
     updates: drawUpdates,
     workflow: () => drawWorkflow(projectItems()),
     completion: () => drawCompletion(projectItems()),
-    mine: () => drawUser(projectItems(), state.session, state.client),
+    mine: () => drawUser(projectItems(), { ...state.session, email: actingEmail(), role: actingRole() }, state.client),
     owner: () => drawOwner(projectItems(), state.client),
     library: () => drawLibrary(state.items, state.library, state.project, state.query, state.client, state.session?.role || ""),
     vendors: () => drawVendorMap(vendorMap(projectItems()), state.query),
@@ -151,8 +215,8 @@ function render() {
     sources: () => drawSources(state.sourceStatus, state.sourceResults, state.client),
     projects: () => drawProjects(state.projects, state.project, state.session?.role || ""),
     analysis: () => {
-      const next = analysisRecord(actingRole(), projectItems(), state.selected);
-      if (next?.code && next.code !== state.selected) {
+      const next = projectItems().some((item) => item.code === state.selected) ? null : analysisRecord(actingRole(), projectItems(), state.selected);
+      if (next?.code) {
         state.selected = next.code;
         state.wizardStep = 0;
       }
@@ -164,7 +228,7 @@ function render() {
         environment: state.session?.environment || "development",
         canGrant: Boolean(state.session?.administrator),
         grants: state.grants,
-        actorEmail: state.session?.email || "",
+        actorEmail: actingEmail(),
         items: projectItems(),
         library: state.library,
       });
@@ -172,9 +236,25 @@ function render() {
   };
   syncProjectSelect();
   syncPracticeBar();
+  syncNavigationButton();
+  const roleName = ROLE_LABEL[actingRole()] || "No granted role";
+  document.querySelector("#context-role").textContent = state.practiceRole
+    ? `Practice ${roleName}. Sample project only.`
+    : state.session?.state === "granted" ? `${roleName} · Signed in` : "Sign-in required";
+  const profile = document.querySelector(".profile");
+  profile.querySelector(".profile-name").textContent = state.session?.state === "granted"
+    ? `${ROLE_LABEL[state.session.role] || state.session.role} · Signed in`
+    : "Sign in";
+  profile.setAttribute("aria-label", state.session?.state === "granted" ? "Open account and sign-in page" : "Sign-in page");
+  main.dataset.view = state.view;
   main.innerHTML = draw[state.view]();
   syncRoleControls();
   bind();
+  const activeStep = main.querySelector('[data-wizard-step][aria-current="step"]');
+  if (activeStep) {
+    const steps = activeStep.parentElement;
+    steps.scrollLeft = Math.max(0, activeStep.offsetLeft - steps.offsetLeft - (steps.clientWidth - activeStep.clientWidth) / 2);
+  }
 }
 
 function pills(item) {
@@ -190,6 +270,9 @@ function drawQueue() {
   const items = visibleItems();
   const current = selected();
   if (!items.length) {
+    if (state.query || state.statusFilter !== "all") {
+      return `<section class="pane"><h2>No matching records</h2><p>Clear the search and status filter to see the project’s records.</p><div class="row-actions"><button type="button" class="primary" data-task="clear-filters">Clear filters</button></div></section>`;
+    }
     const role = actingRole();
     const hint = state.project === "PRACTICE"
       ? "Load the practice records, then choose NSTT, CPI, or Trade. The MDC register stays unchanged."
@@ -198,13 +281,15 @@ function drawQueue() {
       : "Your role can read the register. It cannot start or import an analysis record.";
     return `<div class="pane"><p>No review records yet.</p><p class="quiet">${esc(hint)}</p></div>`;
   }
-  return `<div class="split">
+  const guide = state.project === "PRACTICE" ? drawPracticeGuide() : "";
+  const filters = [["all", "All records"], ["preparing", "Preparing"], ["In review", "In review"], ["Approved", "Approved"]];
+  return `${guide}<div class="queue-toolbar"><p class="quiet">${items.length} ${items.length === 1 ? "record" : "records"} shown</p><div class="status-filters" aria-label="Record status">${filters.map(([value, label]) => `<button type="button" data-status-filter="${value}" aria-pressed="${state.statusFilter === value}">${label}</button>`).join("")}</div></div><div class="split">
     <div class="list">${items.map((item) => `<button type="button" class="item posture-${posture(item.action)} ${current && current.code === item.code ? "on" : ""}" data-code="${esc(item.code)}">
       <strong>${esc(item.code)} ${esc(item.title)}</strong>
       <small>${esc(item.layer)} · v${esc(item.version || 0)} · ${esc(item.ownerRole)} prepares · ${esc(item.reviewerRole)} reviews</small>
       ${pills(item)}
     </button>`).join("")}</div>
-    <div class="pane">${current ? form(current) : ""}</div>
+    <div class="pane">${current ? drawRecordPath(current, actor()) + form(current) : ""}</div>
   </div>`;
 }
 
@@ -276,7 +361,7 @@ function drawOutputs(items = projectItems()) {
 
 function drawDuties() {
   const label = { nstt: "NSTT", cpi: "CPI", trade: "Trade", administrator: "Administrator", china: "China input", client: "Client output" };
-  return `<div class="duties">${DUTIES.map((duty) => `<article class="duty"><h2 style="font-size:16px;margin:0 0 6px;">${esc(label[duty.role] || duty.role)}</h2><p>${esc(duty.duty)}</p></article>`).join("")}
+  return `<div class="duties">${drawPracticeGuide({ open: true })}${DUTIES.map((duty) => `<article class="duty"><h2 style="font-size:16px;margin:0 0 6px;">${esc(label[duty.role] || duty.role)}</h2><p>${esc(duty.duty)}</p></article>`).join("")}
     ${VIEWS.map((duty) => `<article class="duty"><h2 style="font-size:16px;margin:0 0 6px;">${esc(label[duty.role] || duty.role)}</h2><p>${esc(duty.duty)}</p></article>`).join("")}
     <article class="duty"><h2 style="font-size:16px;margin:0 0 6px;">Sequence</h2><p>${esc(STAGES.join(", "))}.</p><p>Each review keeps a future policy and lifecycle note. China and client do not sign in.</p></article>
   </div>`;
@@ -411,25 +496,36 @@ function readForm(formElement, item) {
 async function persist(item, quiet = false) {
   if (state.session?.state !== "granted") {
     if (!quiet) setNotice("The change is visible here. It is not stored. A granted role is required, and this host does not keep records after a restart.");
-    return;
-  }
-  const response = await fetch("/api/workbench/items", {
-    method: "POST",
-    credentials: "include",
-    headers: practiceHeaders(),
-    body: JSON.stringify(item),
-  });
-  const body = await response.json();
-  if (!response.ok) {
-    setNotice(body.message || "The record was not stored.");
     return null;
   }
-  const saved = normalizeReview(body);
-  replace(saved);
-  setNotice(state.session?.database === "postgres"
-    ? `Stored as version ${saved.version} in the development database.`
-    : "Stored for this environment. This host still uses memory, so a restart clears it.");
-  return saved;
+  if (state.saving) return null;
+  state.saving = true;
+  try {
+    const response = await fetch("/api/workbench/items", {
+      method: "POST",
+      credentials: "include",
+      headers: practiceHeaders(),
+      body: JSON.stringify(item),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setNotice(body.message || "The record was not stored. Your entries remain on this screen.");
+      return null;
+    }
+    const saved = normalizeReview(body);
+    state.dirty = false;
+    state.saving = false;
+    replace(saved);
+    setNotice(state.session?.database === "postgres"
+      ? `${saved.code} saved as version ${saved.version}. ${saved.status}.`
+      : `${saved.code} saved for this session. This host uses temporary memory.`);
+    return saved;
+  } catch {
+    setNotice("The save did not finish. Your entries remain on this screen. Check the connection and try again.");
+    return null;
+  } finally {
+    state.saving = false;
+  }
 }
 
 function replace(item) {
@@ -439,10 +535,53 @@ function replace(item) {
 }
 
 function bind() {
-  main.querySelectorAll("[data-code]").forEach((button) => {
+  main.querySelectorAll("[data-code]:not([data-open])").forEach((button) => {
     button.addEventListener("click", () => {
-      state.selected = button.dataset.code;
+      leaveForm(() => {
+        state.selected = button.dataset.code;
+        render();
+      });
+    });
+  });
+  main.querySelectorAll("#review-form, #wizard-form").forEach((formElement) => {
+    const markDirty = () => { state.dirty = true; };
+    formElement.addEventListener("input", markDirty);
+    formElement.addEventListener("change", markDirty);
+  });
+  main.querySelectorAll("[data-status-filter]").forEach((button) => {
+    button.addEventListener("click", () => leaveForm(() => {
+      state.statusFilter = button.dataset.statusFilter;
+      state.view = "queue";
+      state.selected = visibleItems()[0]?.code || "";
       render();
+    }));
+  });
+  main.querySelectorAll("[data-task]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.dataset.task === "access") goTo("analysis", { step: 1 });
+      if (button.dataset.task === "continue") goTo("analysis", { code: button.dataset.taskCode });
+      if (button.dataset.task === "queue") goTo("queue");
+      if (button.dataset.task === "new") leaveForm(startAnalysis);
+      if (button.dataset.task === "practice") leaveForm(() => {
+        state.project = "PRACTICE";
+        state.query = "";
+        state.statusFilter = "all";
+        document.querySelector("#search").value = "";
+        if (!state.projects.some((project) => project.code === "PRACTICE")) {
+          state.projects.push({ code: "PRACTICE", name: "Practice reviews", status: "Active" });
+        }
+        state.practiceRole = "nstt";
+        state.view = "home";
+        state.selected = analysisRecord("nstt", projectItems(), "")?.code || "";
+        setNotice("Practice is on. Only sample records in this project can change.");
+        render();
+      });
+      if (button.dataset.task === "clear-filters") leaveForm(() => {
+        state.query = "";
+        state.statusFilter = "all";
+        document.querySelector("#search").value = "";
+        render();
+      });
     });
   });
   main.querySelectorAll("[data-fill]").forEach((select) => {
@@ -461,7 +600,6 @@ function bind() {
     formElement.addEventListener("submit", async (event) => {
       event.preventDefault();
       const item = readForm(formElement, selected());
-      replace(item);
       await persist(item);
     });
     formElement.querySelectorAll("[data-status]").forEach((button) => {
@@ -469,16 +607,13 @@ function bind() {
         const item = readForm(formElement, selected());
         item.status = button.dataset.status;
         if (item.status === "Approved") {
-          const block = approvalBlock({ email: state.session?.email || "", role: state.session?.role || "" }, item);
+          const block = approvalBlock(actor(), item);
           if (block) {
-            item.status = selected().status;
-            replace(item);
             setNotice(block);
             return;
           }
-          item.reviewedBy = state.session?.email || "";
+          item.reviewedBy = actingEmail();
         }
-        replace(normalizeReview(item));
         await persist(normalizeReview(item));
       });
     });
@@ -509,7 +644,7 @@ function bind() {
       if (button.dataset.brief === "next") state.slide = Math.min(last, state.slide + 1);
       if (button.dataset.brief === "export") {
         downloadFile(briefToPptx(brief), `${state.project}-decision-brief.pptx`, "application/vnd.openxmlformats-officedocument.presentationml.presentation");
-        setNotice("The decision brief is downloading. It uses the current approved records for this project.");
+        setNotice("The brief is downloading. Its decision line uses approved records; readiness and open items cover the whole selected project.");
         return;
       }
       if (button.dataset.brief === "vendors") {
@@ -529,21 +664,26 @@ function bind() {
     });
   });
   main.querySelectorAll("[data-project]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", () => leaveForm(() => {
+      if (button.dataset.project !== "PRACTICE") state.practiceRole = "";
       state.project = button.dataset.project;
+      state.query = "";
+      state.statusFilter = "all";
+      document.querySelector("#search").value = "";
       state.slide = 0;
       state.view = "queue";
       const visible = visibleItems();
       state.selected = visible[0]?.code || "";
       setNotice(`Showing ${state.project}. A blank project id still belongs to MDC until a record is saved into another project.`);
       render();
-    });
+    }));
   });
   main.querySelectorAll("[data-wizard-step]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", () => leaveForm(() => {
       state.wizardStep = Number(button.dataset.wizardStep) || 0;
       render();
-    });
+      scrollWorkToTop();
+    }));
   });
   main.querySelectorAll("[data-wizard]").forEach((button) => {
     button.addEventListener("click", () => wizardAction(button.dataset.wizard));
@@ -554,9 +694,7 @@ function bind() {
   if (grantForm) grantForm.addEventListener("submit", grantRole);
   main.querySelectorAll("[data-open]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.selected = button.dataset.code;
-      state.view = button.dataset.open || "queue";
-      render();
+      goTo(button.dataset.open || "queue", { code: button.dataset.code });
     });
   });
 }
@@ -676,16 +814,39 @@ function exportRegister() {
 }
 
 document.querySelectorAll(".nav").forEach((button) => {
-  button.addEventListener("click", () => {
-    if (button.dataset.view === "analysis" && state.view !== "analysis") {
-      state.wizardStep = 0;
-      if (state.session?.administrator) loadGrants().then(() => { if (state.view === "analysis") render(); });
-    }
-    state.view = button.dataset.view;
-    const toggle = document.querySelector("#nav-toggle");
-    if (toggle) toggle.checked = false;
-    render();
-  });
+  button.addEventListener("click", () => goTo(button.dataset.view));
+});
+
+const mobileNavigation = window.matchMedia("(max-width: 900px)");
+function syncNavigationButton() {
+  const toggled = document.querySelector("#nav-toggle").checked;
+  document.querySelector("#nav-menu-button").setAttribute("aria-expanded", String(mobileNavigation.matches ? toggled : !toggled));
+}
+
+document.querySelector("#nav-menu-button").addEventListener("click", () => {
+  const toggle = document.querySelector("#nav-toggle");
+  toggle.checked = !toggle.checked;
+  syncNavigationButton();
+});
+
+mobileNavigation.addEventListener("change", () => {
+  document.querySelector("#nav-toggle").checked = false;
+  syncNavigationButton();
+});
+
+document.querySelector("#unsaved-dialog").addEventListener("close", (event) => {
+  const next = state.pendingNavigation;
+  state.pendingNavigation = null;
+  if (event.target.returnValue === "discard" && next) {
+    state.dirty = false;
+    next();
+  }
+});
+
+window.addEventListener("beforeunload", (event) => {
+  if (!state.dirty) return;
+  event.preventDefault();
+  event.returnValue = "";
 });
 
 function practiceHeaders() {
@@ -719,12 +880,16 @@ function syncRoleControls() {
   const method = document.querySelector("#load-method");
   if (add) {
     add.disabled = !prepare;
+    add.hidden = !prepare || state.view === "home" || state.view === "analysis";
     add.title = prepare ? "Start a new analysis record." : "Only the NSTT role can start an analysis record.";
   }
   if (method) {
     method.disabled = !methodPrepare;
+    method.hidden = !methodPrepare;
     method.title = methodPrepare ? "Start the method checklist." : "Only the NSTT role can start the method checklist.";
   }
+  document.querySelector("#more-actions").hidden = !methodPrepare && !practiceAllowed();
+  document.querySelector("#client-toggle").hidden = !["outputs", "brief", "present", "vendors", "cards"].includes(state.view);
 }
 
 function wizardLimit() {
@@ -732,14 +897,21 @@ function wizardLimit() {
 }
 
 async function wizardAction(action) {
-  if (action === "prev") state.wizardStep = Math.max(0, state.wizardStep - 1);
-  if (action === "next") state.wizardStep = Math.min(wizardLimit(), state.wizardStep + 1);
   if (action === "prev" || action === "next") {
-    render();
+    const formElement = document.querySelector("#wizard-form");
+    if (action === "next" && formElement) {
+      formElement.requestSubmit();
+      return;
+    }
+    leaveForm(() => {
+      state.wizardStep = action === "prev" ? Math.max(0, state.wizardStep - 1) : Math.min(wizardLimit(), state.wizardStep + 1);
+      render();
+      scrollWorkToTop();
+    });
     return;
   }
   if (action === "start") {
-    await startAnalysis();
+    leaveForm(startAnalysis);
     return;
   }
   const current = selected();
@@ -772,6 +944,8 @@ async function saveWizardStep(event, formElement) {
   const data = new FormData(formElement);
   const update = String(data.get("update") || "").trim();
   const next = normalizeReview(current);
+  const currentStage = analysisSteps(actingRole(), current)[state.wizardStep]?.stage;
+  if (currentStage && STAGES.includes(currentStage)) next.stage = currentStage;
   for (const [key, value] of data.entries()) {
     if (key === "update") continue;
     next[key] = value;
@@ -787,7 +961,21 @@ async function saveWizardStep(event, formElement) {
   if (practiceAllowed() && state.practiceRole) next.projectId = "PRACTICE";
   const saved = normalizeReview(next);
   saved.updates = next.updates;
-  await persist(saved);
+  const submit = formElement.querySelector("button[type='submit']");
+  const priorLabel = submit?.textContent;
+  if (submit) {
+    submit.disabled = true;
+    submit.textContent = "Saving...";
+  }
+  const result = await persist(saved);
+  if (result) {
+    state.wizardStep = Math.min(wizardLimit(), state.wizardStep + 1);
+    render();
+    scrollWorkToTop();
+  } else if (submit?.isConnected) {
+    submit.disabled = false;
+    submit.textContent = priorLabel;
+  }
 }
 
 async function startAnalysis() {
@@ -796,6 +984,9 @@ async function startAnalysis() {
     return;
   }
   const practicing = practiceAllowed() && state.practiceRole === "nstt";
+  state.query = "";
+  state.statusFilter = "all";
+  document.querySelector("#search").value = "";
   const item = normalizeReview({
     code: practicing ? nextPracticeCode(state.items) : nextCode(state.items),
     title: practicing ? "Sample review" : "New review",
@@ -848,9 +1039,16 @@ function syncProjectSelect() {
 }
 
 document.querySelector("#project").addEventListener("change", (event) => {
-  const leftPractice = Boolean(state.practiceRole && event.target.value !== "PRACTICE");
+  const nextProject = event.target.value;
+  event.target.value = state.project;
+  leaveForm(() => {
+  const leftPractice = Boolean(state.practiceRole && nextProject !== "PRACTICE");
   if (leftPractice) state.practiceRole = "";
-  state.project = event.target.value;
+  state.project = nextProject;
+  state.query = "";
+  state.statusFilter = "all";
+  state.wizardStep = 0;
+  document.querySelector("#search").value = "";
   state.slide = 0;
   const visible = visibleItems();
   state.selected = visible[0]?.code || "";
@@ -858,23 +1056,38 @@ document.querySelector("#project").addEventListener("change", (event) => {
     ? "Practice role is off because this is not the practice project. Your administrator grant is unchanged."
     : `Showing ${state.project}. Metrics, cards, and dashboards follow this project. The workbook export still covers the full register.`);
   render();
+  });
 });
 
 document.querySelector("#search").addEventListener("input", (event) => {
-  state.query = event.target.value;
+  const query = event.target.value;
+  if (state.dirty) event.target.value = state.query;
+  leaveForm(() => {
+  state.query = query;
+  document.querySelector("#search").value = query;
+  if (!["queue", "cards", "library", "vendors"].includes(state.view)) state.view = "queue";
   render();
+  });
 });
 
 document.querySelector("#client-toggle").addEventListener("click", () => {
+  leaveForm(() => {
   state.client = !state.client;
   setNotice(state.client
     ? "Client view shows the action, conditions, and lifecycle. Method notes stay off this view."
     : "Internal view is open. China and client do not sign in.");
   render();
+  });
 });
 
 document.querySelector("#practice-role")?.addEventListener("change", (event) => {
-  state.practiceRole = event.target.value;
+  const nextRole = event.target.value;
+  event.target.value = state.practiceRole;
+  leaveForm(() => {
+  state.practiceRole = nextRole;
+  state.query = "";
+  state.statusFilter = "all";
+  document.querySelector("#search").value = "";
   state.wizardStep = 0;
   state.slide = 0;
   if (state.practiceRole) {
@@ -883,7 +1096,7 @@ document.querySelector("#practice-role")?.addEventListener("change", (event) => 
     }
     state.project = "PRACTICE";
     const visible = projectItems();
-    state.selected = visible[0]?.code || "";
+    state.selected = analysisRecord(state.practiceRole, visible, "")?.code || "";
     setNotice(`Practice ${state.practiceRole.toUpperCase()} applies only to the practice project. Your administrator grant is unchanged.`);
   } else {
     state.project = "MDC";
@@ -892,9 +1105,10 @@ document.querySelector("#practice-role")?.addEventListener("change", (event) => 
     setNotice("Practice role is off. You are the administrator again. The MDC register is unchanged.");
   }
   render();
+  });
 });
 
-document.querySelector("#load-practice")?.addEventListener("click", async () => {
+document.querySelector("#load-practice")?.addEventListener("click", () => leaveForm(async () => {
   const response = await fetch("/api/workbench/practice", {
     method: "POST",
     credentials: "include",
@@ -912,6 +1126,10 @@ document.querySelector("#load-practice")?.addEventListener("click", async () => 
     state.items = Array.isArray(payload.items) ? payload.items.map(normalizeReview) : state.items;
   }
   await loadCatalog();
+  state.dirty = false;
+  state.query = "";
+  state.statusFilter = "all";
+  document.querySelector("#search").value = "";
   state.project = "PRACTICE";
   state.practiceRole = state.practiceRole || "nstt";
   state.selected = "S-01";
@@ -919,30 +1137,11 @@ document.querySelector("#load-practice")?.addEventListener("click", async () => 
   const created = body.created?.length ? `Added ${body.created.join(", ")}.` : "The practice records were already loaded.";
   setNotice(`${created} Choose NSTT to finish S-01, CPI to review S-02, or Trade to review S-03. The MDC register is unchanged.`);
   render();
-});
+}));
 
-document.querySelector("#add-record").addEventListener("click", async () => {
-  if (actingRole() !== "nstt") {
-    setNotice("Only the NSTT role can start an analysis record.");
-    return;
-  }
-  const practicing = practiceAllowed() && state.practiceRole === "nstt";
-  const item = normalizeReview({
-    code: practicing ? nextPracticeCode(state.items) : nextCode(state.items),
-    title: practicing ? "Sample review" : "New review",
-    ownerRole: "nstt",
-    reviewerRole: "cpi",
-    projectId: practicing ? "PRACTICE" : state.project,
-    supplier: practicing ? "Example Supplier LLC" : "",
-  });
-  state.items = [...state.items, item];
-  state.selected = item.code;
-  state.view = "queue";
-  render();
-  await persist(item);
-});
+document.querySelector("#add-record").addEventListener("click", () => leaveForm(startAnalysis));
 
-document.querySelector("#load-method").addEventListener("click", async () => {
+document.querySelector("#load-method").addEventListener("click", () => leaveForm(async () => {
   if (state.session?.role !== "nstt") {
     setNotice("Only the NSTT role can start the method checklist.");
     return;
@@ -955,7 +1154,7 @@ document.querySelector("#load-method").addEventListener("click", async () => {
   setNotice("The method checklist is ready. It does not contain the client register. Save still requires a granted role.");
   render();
   for (const item of additions) await persist(item, true);
-});
+}));
 
 document.addEventListener("click", (event) => {
   const mark = event.target.closest(".field-mark");
@@ -969,16 +1168,23 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !document.querySelector("#unsaved-dialog").open) {
+    document.querySelectorAll(".more-actions[open], .nav-more[open]").forEach((menu) => { menu.open = false; });
+    if (mobileNavigation.matches && document.querySelector("#nav-toggle").checked) {
+      document.querySelector("#nav-toggle").checked = false;
+      syncNavigationButton();
+      document.querySelector("#nav-menu-button").focus();
+    }
+  }
   if (event.target.matches("input, textarea, select")) return;
+  if (document.querySelector("#unsaved-dialog").open) return;
   const views = ["queue", "cards", "metrics", "outputs", "duties", "updates"];
   if (event.key >= "1" && event.key <= "6") {
-    state.view = views[Number(event.key) - 1];
-    render();
+    goTo(views[Number(event.key) - 1]);
     return;
   }
   if (state.view === "analysis" && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
-    state.wizardStep = event.key === "ArrowRight" ? Math.min(wizardLimit(), state.wizardStep + 1) : Math.max(0, state.wizardStep - 1);
-    render();
+    wizardAction(event.key === "ArrowRight" ? "next" : "prev");
     return;
   }
   if ((state.view === "present" || state.view === "brief") && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {

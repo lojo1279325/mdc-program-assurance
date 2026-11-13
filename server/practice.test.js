@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { approvalBlock } from "../public/rules.js";
 import { privilegeDecision } from "../public/privileges.js";
 import { PRACTICE_ACTORS, PRACTICE_PROJECT, practiceActor, practiceSamples, practiceSeedPlan } from "./practice.js";
+import { drawPracticeGuide, practiceGuide } from "../public/practiceguide.js";
 
 const admin = {
   environment: "development",
@@ -48,6 +49,14 @@ test("practice samples let a different person review and approve without changin
   assert.match(privilegeDecision(nstt, samples[1], { ...samples[1], status: "Approved" }), /cannot approve|prepared/);
   assert.match(privilegeDecision(cpi, samples[2], { ...samples[2], status: "Approved" }), /assigned reviewer/);
   assert.equal(privilegeDecision(trade, samples[2], { ...samples[2], status: "Approved" }), "");
+
+  const guide = practiceGuide();
+  assert.equal(guide.steps.map((step) => step.role).join(", "), "Administrator, NSTT, CPI, Trade, Brief");
+  assert.match(drawPracticeGuide(), /S-01/);
+  assert.match(drawPracticeGuide(), /S-02/);
+  assert.match(drawPracticeGuide(), /S-03/);
+  assert.equal(drawPracticeGuide().includes("—"), false);
+  assert.equal(/wuxi|softbank/i.test(drawPracticeGuide()), false);
 
   const plan = practiceSeedPlan([{ code: "S-01", projectId: "MDC" }, { code: "S-02", projectId: PRACTICE_PROJECT }]);
   assert.deepEqual(plan.blocked, ["S-01"]);

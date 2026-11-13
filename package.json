@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
-    "check": "node --check server/app.js && node --check server/index.js && node --check api/index.js && node --check server/store.js && node --check server/sources.js && node --check server/practice.js && node --check public/rules.js && node --check public/boards.js && node --check public/brief.js && node --check public/pptx.js && node --check public/briefview.js && node --check public/present.js && node --check public/privileges.js && node --check public/guidance.js && node --check public/wizard.js && node --check public/views.js && node --check public/workbench.js && node --test server/policy.test.js server/workflow.test.js server/boards.test.js server/brief.test.js server/privileges.test.js server/practice.test.js"
+    "check": "node --check server/app.js && node --check server/index.js && node --check api/index.js && node --check server/store.js && node --check server/sources.js && node --check server/practice.js && node --check public/rules.js && node --check public/boards.js && node --check public/brief.js && node --check public/pptx.js && node --check public/briefview.js && node --check public/present.js && node --check public/privileges.js && node --check public/guidance.js && node --check public/wizard.js && node --check public/views.js && node --check public/workbench.js && node --check public/experience.js && node --check public/practiceguide.js && node --test server/policy.test.js server/workflow.test.js server/boards.test.js server/brief.test.js server/privileges.test.js server/practice.test.js server/experience.test.js"
   },
   "dependencies": {
     "express": "^5.1.0",

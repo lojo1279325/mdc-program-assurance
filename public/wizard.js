@@ -13,7 +13,7 @@ const PREPARE_STEPS = [
 ];
 
 const REVIEW_STEPS = [
-  { id: "queue", title: "Open a record waiting on your role", body: "Choose a record that is in review and assigned to your role. You can read every record. You can act only on the records assigned to you." },
+    { id: "queue", short: "Open", title: "Open a record waiting on your role", body: "Choose a record that is in review and assigned to your role. You can read every record. You can act only on the records assigned to you." },
   { id: "facts", title: "Check the facts for your role", body: "Check the part, the drawing, and the supplier. Do not change those fields." },
   { id: "evidence", title: "Check the evidence", body: "If a fact is missing, confidence stays pending and the risk band stays as recorded. Return the record instead of filling the gap yourself." },
   { id: "note", title: "Record your review note", body: "Add a review note. The note is the review. It is not a new analysis." },
@@ -67,6 +67,7 @@ function fieldControl(name, record, known) {
     value: record?.[name] ?? "",
     suggestions: suggestKey ? known[suggestKey] || [] : [],
     idPrefix: "wizard",
+    required: name === "title",
   });
 }
 
@@ -86,7 +87,7 @@ function factList(record) {
     ["Status", record.status],
     ["Reviewer", ROLE_LABEL[record.reviewerRole] || record.reviewerRole],
   ];
-  return rows.map(([label, value]) => `<p><strong>${esc(label)}.</strong> ${esc(value)}</p>`).join("");
+  return `<dl class="record-facts">${rows.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>`;
 }
 
 export function drawWizard({ role = "", step = 0, record = null, waiting = [], environment = "development", canGrant = false, grants = [], actorEmail = "", items = [], library = {} }) {
@@ -103,8 +104,9 @@ export function drawWizard({ role = "", step = 0, record = null, waiting = [], e
         ? "review"
         : "locked";
   const known = knownValues(items, library);
-  const stepButtons = steps.map((item, itemIndex) => `<button type="button" class="${itemIndex === index ? "on" : ""}" data-wizard-step="${itemIndex}"><span class="bpf-index">${itemIndex + 1}</span>${esc(item.stage || item.title)}</button>`).join("");
-  let panel = `${guideBanner()}<p class="kicker">Step ${index + 1} of ${steps.length}${current.stage ? ` · ${esc(current.stage)}` : ""}</p><h2>${esc(current.title)}</h2><p>${esc(current.body)}</p>`;
+  const shortLabels = { facts: "Facts", evidence: "Evidence", note: "Note", decision: "Decision", role: "Role", grant: "Access", project: "Project", sequence: "Process", result: "Outputs" };
+  const stepButtons = steps.map((item, itemIndex) => `<button type="button" class="${itemIndex === index ? "on" : ""}" data-wizard-step="${itemIndex}" ${itemIndex === index ? 'aria-current="step"' : ""}><span class="bpf-index">${itemIndex + 1}</span>${esc(item.stage || item.short || shortLabels[item.id] || item.title)}</button>`).join("");
+  let panel = `<div class="wizard-context"><span>${record ? `${esc(record.code)} · ${esc(record.title)}` : "No record selected"}</span>${record ? `<span class="pill">${esc(record.status)}</span>` : ""}</div><p class="kicker">Step ${index + 1} of ${steps.length}${current.stage ? ` · ${esc(current.stage)}` : ""}</p><h2>${esc(current.title)}</h2><p>${esc(current.body)}</p>${guideBanner()}`;
   if (mode === "prepare") {
     if (reviewRole && !waiting.length) panel += `<p class="quiet">No record is waiting on ${esc(ROLE_LABEL[role] || role)} for review.</p>`;
     if (!record) {
@@ -112,14 +114,14 @@ export function drawWizard({ role = "", step = 0, record = null, waiting = [], e
     } else if (current.id === "handoff") {
       panel += `${factList(record)}<p>Assigned reviewer: ${esc(ROLE_LABEL[record.reviewerRole] || record.reviewerRole)}. ${record.tradeSensitive ? "This record is trade sensitive, so Trade must add a note before approval." : "Trade adds a note only when the record is trade sensitive."}</p><div class="row-actions"><button type="button" class="primary" data-wizard="send">Send to review</button></div>`;
     } else {
-      panel += `<form class="form" id="wizard-form"><div class="grid-2">${current.fields.map((field) => fieldControl(field, record, known)).join("")}</div><div class="row-actions"><button type="submit" class="primary">Save this step</button></div></form>`;
+      panel += `<form class="form" id="wizard-form"><div class="grid-2">${current.fields.map((field) => fieldControl(field, record, known)).join("")}</div><div class="row-actions"><button type="submit" class="primary">Save and continue</button></div></form>`;
     }
   } else if (mode === "review") {
     const choices = waiting.slice(0, 12).map((item) => `<button type="button" class="item code-link" data-code="${esc(item.code)}" data-open="analysis">${esc(item.code)} ${esc(item.title || "Untitled")}</button>`).join("");
     panel += choices ? `<div class="pills">${choices}</div>` : `<p>No record is waiting on ${esc(ROLE_LABEL[role] || role)} in this project.</p>`;
     panel += factList(record);
     if (current.id === "note" && access.canNote) {
-      panel += `<form class="form" id="wizard-form">${fieldBox({ key: "update", name: "update", idPrefix: "wizard" })}<div class="row-actions"><button type="submit" class="primary">Save note</button></div></form>`;
+      panel += `<form class="form" id="wizard-form">${fieldBox({ key: "update", name: "update", idPrefix: "wizard" })}<div class="row-actions"><button type="submit" class="primary">Save note and continue</button></div></form>`;
     }
     if (current.id === "decision") {
       const block = record ? approvalBlock({ role, email: actorEmail }, record) : "Select a record before approval.";
@@ -152,6 +154,6 @@ export function drawWizard({ role = "", step = 0, record = null, waiting = [], e
   if (mode === "prepare" && role === "nstt" && record && index === 0) {
     panel += `<div class="row-actions"><button type="button" data-wizard="start">Start a new analysis</button></div>`;
   }
-  panel += `<div class="row-actions"><button type="button" data-wizard="prev">Previous</button><button type="button" data-wizard="next">Next</button></div>`;
-  return `<div class="wizard"><div class="wizard-steps bpf" aria-label="Business process">${stepButtons}</div><article class="wizard-panel"><p class="locked-note">${esc(roleSummary(role))}</p>${panel}</article></div>`;
+  panel += `<div class="row-actions wizard-navigation"><button type="button" data-wizard="prev" ${index === 0 ? "disabled" : ""}>Previous step</button><button type="button" data-wizard="next" ${index === steps.length - 1 ? "disabled" : ""}>Next step</button></div>`;
+  return `<div class="wizard"><div class="wizard-steps bpf" aria-label="Analysis steps">${stepButtons}</div><article class="wizard-panel">${panel}<details class="role-reminder"><summary>Your role and permissions</summary><p>${esc(roleSummary(role))}</p></details></article></div>`;
 }
