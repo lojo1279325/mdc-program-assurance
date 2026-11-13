@@ -9,17 +9,26 @@
   </head>
   <body>
     <div class="app">
+      <div class="sysbar">
+        <span>System</span>
+        <span class="env" id="env-label">Development</span>
+      </div>
       <header class="appbar">
         <div class="appbar-title">
           <p class="brand">MDC Program Assurance</p>
-          <p class="env" id="env-label">Development</p>
+        </div>
+        <div class="shell-search search field">
+          <span class="field-label">Search <button type="button" class="field-mark" aria-expanded="false" aria-describedby="search-tip">Guide</button></span>
+          <input id="search" type="search" aria-describedby="search-example" />
+          <span class="field-example" id="search-example">Example: a record code or a vendor legal name.</span>
+          <span class="field-tip" id="search-tip" role="tooltip">Search by record code, title, or vendor name. The list narrows as you type.</span>
         </div>
         <a class="appbar-link" href="/">Sign-in page</a>
       </header>
       <div class="shell">
-        <aside class="rail" aria-label="Site map">
+        <aside class="rail" aria-label="Navigation">
           <input id="nav-toggle" class="nav-toggle" type="checkbox" />
-          <label class="nav-toggle-label" for="nav-toggle">Site map</label>
+          <label class="nav-toggle-label" for="nav-toggle">Navigation</label>
           <p class="sitemap-area">Program assurance</p>
           <nav aria-label="Workbench">
             <p class="sitemap-group">Work</p>
@@ -64,12 +73,6 @@
                 <select id="project" aria-describedby="project-example"></select>
                 <span class="field-example" id="project-example">Example: MDC for the current register.</span>
                 <span class="field-tip" id="project-tip" role="tooltip">Choose the project whose records you want to see. A new project starts empty and does not move the current register.</span>
-              </div>
-              <div class="search field">
-                <span class="field-label">Search <button type="button" class="field-mark" aria-expanded="false" aria-describedby="search-tip">Guide</button></span>
-                <input id="search" type="search" aria-describedby="search-example" />
-                <span class="field-example" id="search-example">Example: a record code or a vendor legal name.</span>
-                <span class="field-tip" id="search-tip" role="tooltip">Search by record code, title, or vendor name. The list narrows as you type.</span>
               </div>
             </div>
           </div>
