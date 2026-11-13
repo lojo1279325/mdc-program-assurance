@@ -103,7 +103,7 @@ export function drawWizard({ role = "", step = 0, record = null, waiting = [], e
         ? "review"
         : "locked";
   const known = knownValues(items, library);
-  const stepButtons = steps.map((item, itemIndex) => `<button type="button" class="${itemIndex === index ? "on" : ""}" data-wizard-step="${itemIndex}">${itemIndex + 1}. ${esc(item.title)}</button>`).join("");
+  const stepButtons = steps.map((item, itemIndex) => `<button type="button" class="${itemIndex === index ? "on" : ""}" data-wizard-step="${itemIndex}"><span class="bpf-index">${itemIndex + 1}</span>${esc(item.stage || item.title)}</button>`).join("");
   let panel = `${guideBanner()}<p class="kicker">Step ${index + 1} of ${steps.length}${current.stage ? ` · ${esc(current.stage)}` : ""}</p><h2>${esc(current.title)}</h2><p>${esc(current.body)}</p>`;
   if (mode === "prepare") {
     if (reviewRole && !waiting.length) panel += `<p class="quiet">No record is waiting on ${esc(ROLE_LABEL[role] || role)} for review.</p>`;
@@ -153,5 +153,5 @@ export function drawWizard({ role = "", step = 0, record = null, waiting = [], e
     panel += `<div class="row-actions"><button type="button" data-wizard="start">Start a new analysis</button></div>`;
   }
   panel += `<div class="row-actions"><button type="button" data-wizard="prev">Previous</button><button type="button" data-wizard="next">Next</button></div>`;
-  return `<div class="wizard"><div class="wizard-steps" aria-label="Analysis steps">${stepButtons}</div><article class="wizard-panel"><p class="locked-note">${esc(roleSummary(role))}</p>${panel}</article></div>`;
+  return `<div class="wizard"><div class="wizard-steps bpf" aria-label="Business process">${stepButtons}</div><article class="wizard-panel"><p class="locked-note">${esc(roleSummary(role))}</p>${panel}</article></div>`;
 }
