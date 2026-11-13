@@ -70,9 +70,9 @@ test("the export leaves out personal names and keeps the current headline", () =
   const panel = drawPresentation(brief, 4);
   assert.match(panel, /Live presentation/);
   assert.match(panel, /Slide previews/);
-  assert.match(panel, /Harbor Check Components/);
-  assert.match(panel, /presentation-bars/);
-  assert.match(panel, /Proceed with active mitigation/);
+  assert.match(drawPresentation(brief, 0), /Harbor Check Components/);
+  assert.match(panel, /executive-slide/);
+  assert.match(panel, /data-presentation-zoom/);
   assert.doesNotMatch(panel, /Proceed with acti\.\.\./);
   assert.doesNotMatch(panel, /analyst@/);
 });

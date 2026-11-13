@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { workPlan, drawStart, drawRecordPath } from "../public/experience.js";
+import { workPlan, drawStart, drawRecordPath, drawQuickGuide } from "../public/experience.js";
 import { drawWizard } from "../public/wizard.js";
 import { drawPresentation } from "../public/present.js";
 import { decisionBrief } from "../public/brief.js";
@@ -63,4 +63,18 @@ test("presentation readiness changes after approval without excluding open recor
   assert.equal(after.records, 3);
   assert.match(drawPresentation(after, 1), /1 approved record is available/);
   assert.doesNotMatch(drawPresentation(after, 1), /No approved record is available/);
+});
+
+test("quick guide follows the current role and keeps practice explicit", () => {
+  const admin = drawQuickGuide({ view: "analysis", role: "administrator", projectName: "MDC", practice: false });
+  assert.match(admin, /Administrators manage grants and projects/);
+  const prepare = drawQuickGuide({ view: "analysis", role: "nstt", projectName: "<sample>", practice: true });
+  assert.match(prepare, /Save each step/);
+  assert.match(prepare, /Practice only/);
+  assert.match(prepare, /&lt;sample&gt;/);
+  assert.doesNotMatch(prepare, /<sample>/);
+  const review = drawQuickGuide({ view: "analysis", role: "cpi", projectName: "Practice reviews" });
+  assert.match(review, /cannot approve your own preparation/);
+  const presentation = drawQuickGuide({ view: "present", role: "trade", projectName: "MDC" });
+  assert.match(presentation, /Download PowerPoint keeps the same layouts/);
 });

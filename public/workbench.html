@@ -72,6 +72,7 @@
               <p id="notice" class="quiet" role="status">Loading the development workspace.</p>
             </div>
             <div class="command-actions" aria-label="Commands">
+              <button type="button" id="quick-guide" class="ghost" aria-haspopup="dialog">Quick guide</button>
               <button type="button" id="add-record" class="ghost" hidden>New analysis</button>
               <button type="button" id="client-toggle" class="ghost">Client view</button>
               <details class="more-actions" id="more-actions">
@@ -108,6 +109,9 @@
         </section>
       </div>
     </div>
+    <dialog id="guide-dialog" aria-labelledby="quick-guide-title">
+      <div id="guide-content"></div>
+    </dialog>
     <dialog id="unsaved-dialog" aria-labelledby="unsaved-title">
       <form method="dialog">
         <h2 id="unsaved-title">Keep your unsaved changes?</h2>

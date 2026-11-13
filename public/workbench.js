@@ -26,7 +26,8 @@ import { recordAccess, ROLE_LABEL } from "./privileges.js";
 import { analysisRecord, analysisSteps, drawWizard } from "./wizard.js";
 import { fieldBox, guideBanner, knownValues } from "./guidance.js";
 import { drawPracticeGuide } from "./practiceguide.js";
-import { drawStart, drawRecordPath } from "./experience.js";
+import { drawStart, drawRecordPath, drawQuickGuide } from "./experience.js";
+import { rowsToCsv } from "./csv.js";
 
 const state = {
   items: [],
@@ -41,6 +42,7 @@ const state = {
   sourceStatus: { federalRegister: true, screeningList: false, sayari: false },
   sourceResults: [],
   slide: 0,
+  presentationReadable: false,
   wizardStep: 0,
   practiceRole: "",
   grants: [],
@@ -211,7 +213,7 @@ function render() {
     library: () => drawLibrary(state.items, state.library, state.project, state.query, state.client, state.session?.role || ""),
     vendors: () => drawVendorMap(vendorMap(projectItems()), state.query),
     brief: () => drawBrief(currentBrief(), state.slide),
-    present: () => drawPresentation(currentBrief(), state.slide),
+    present: () => drawPresentation(currentBrief(), state.slide, { readable: state.presentationReadable }),
     sources: () => drawSources(state.sourceStatus, state.sourceResults, state.client),
     projects: () => drawProjects(state.projects, state.project, state.session?.role || ""),
     analysis: () => {
@@ -250,6 +252,11 @@ function render() {
   main.innerHTML = draw[state.view]();
   syncRoleControls();
   bind();
+  const currentPreview = main.querySelector('.preview[aria-current="true"]');
+  if (currentPreview) {
+    const strip = currentPreview.parentElement;
+    strip.scrollLeft = Math.max(0, currentPreview.offsetLeft - strip.offsetLeft - (strip.clientWidth - currentPreview.clientWidth) / 2);
+  }
   const activeStep = main.querySelector('[data-wizard-step][aria-current="step"]');
   if (activeStep) {
     const steps = activeStep.parentElement;
@@ -661,7 +668,13 @@ function bind() {
     button.addEventListener("click", () => {
       state.slide = Number(button.dataset.slideIndex) || 0;
       render();
+      main.querySelector(`[data-slide-index="${state.slide}"]`)?.focus({ preventScroll: true });
     });
+  });
+  main.querySelector("[data-presentation-zoom]")?.addEventListener("click", () => {
+    state.presentationReadable = !state.presentationReadable;
+    render();
+    main.querySelector("[data-presentation-zoom]")?.focus({ preventScroll: true });
   });
   main.querySelectorAll("[data-project]").forEach((button) => {
     button.addEventListener("click", () => leaveForm(() => {
@@ -804,8 +817,7 @@ async function restoreVersion(version) {
 function exportRegister() {
   const rows = state.client ? clientView(projectItems()) : projectItems().map(normalizeReview);
   if (!rows.length) return;
-  const headers = Object.keys(rows[0]);
-  const csv = [headers.join(","), ...rows.map((row) => headers.map((key) => `"${String(row[key] ?? "").replaceAll('"', '""')}"`).join(","))].join("\n");
+  const csv = rowsToCsv(rows);
   const link = document.createElement("a");
   link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
   link.download = state.client ? `${state.project}-client-register.csv` : `${state.project}-decision-register.csv`;
@@ -1167,7 +1179,24 @@ document.addEventListener("click", (event) => {
   mark.setAttribute("aria-expanded", mark.getAttribute("aria-expanded") === "true" ? "false" : "true");
 });
 
+document.querySelector("#quick-guide").addEventListener("click", () => {
+  const dialog = document.querySelector("#guide-dialog");
+  dialog.querySelector("#guide-content").innerHTML = drawQuickGuide({
+    view: state.view,
+    role: actingRole(),
+    projectName: state.projects.find((project) => project.code === state.project)?.name || state.project,
+    practice: Boolean(state.practiceRole),
+  });
+  dialog.querySelector("[data-guide-close]").addEventListener("click", () => dialog.close());
+  dialog.querySelectorAll("[data-guide-to]").forEach((button) => button.addEventListener("click", () => {
+    dialog.close();
+    goTo(button.dataset.guideTo);
+  }));
+  dialog.showModal();
+});
+
 document.addEventListener("keydown", (event) => {
+  if (document.querySelector("dialog[open]")) return;
   if (event.key === "Escape" && !document.querySelector("#unsaved-dialog").open) {
     document.querySelectorAll(".more-actions[open], .nav-more[open]").forEach((menu) => { menu.open = false; });
     if (mobileNavigation.matches && document.querySelector("#nav-toggle").checked) {
@@ -1188,10 +1217,18 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if ((state.view === "present" || state.view === "brief") && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
+    event.preventDefault();
     const brief = currentBrief();
     const last = Math.max(0, (state.view === "present" ? presentationSlides(brief) : brief.slides).length - 1);
     state.slide = event.key === "ArrowRight" ? Math.min(last, state.slide + 1) : Math.max(0, state.slide - 1);
     render();
+    main.querySelector(".presentation-viewport")?.focus({ preventScroll: true });
+  }
+  if (state.view === "present" && (event.key === "Home" || event.key === "End")) {
+    event.preventDefault();
+    state.slide = event.key === "Home" ? 0 : presentationSlides(currentBrief()).length - 1;
+    render();
+    main.querySelector(".presentation-viewport")?.focus({ preventScroll: true });
   }
 });
 
