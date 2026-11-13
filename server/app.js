@@ -12,6 +12,7 @@ import { applyImportRow, cleanProjectId, normalizeReview, validRecordCode } from
 import { importPrivilege, libraryPrivilege, privilegeDecision, projectPrivilege, restorePrivilege } from "../public/privileges.js";
 import { BUILT_IN_PROJECT, validNewProjectCode, vendorKey } from "../public/boards.js";
 import { lookupSources, sourceStatus } from "./sources.js";
+import { PRACTICE_PROJECT, practiceActor, practiceRoleFrom, practiceSeedPlan } from "./practice.js";
 import { rowsFromWorkbook, workbookFromRows } from "./sheet.js";
 
 const store = openStore();
@@ -254,6 +255,19 @@ export function createApp() {
       return;
     }
     const existing = parseReview((await store.listItems(actor.environment)).find((row) => row.code === code));
+    const acting = practiceActor({
+      environment: actor.environment,
+      designated: designatedAdministrators().includes(actor.session.email),
+      grantRole: actor.grant.role,
+      email: actor.session.email,
+      requestedRole: practiceRoleFrom(req.get("x-practice-role")),
+      projectId: req.body?.projectId || existing?.projectId,
+      existingProjectId: existing?.projectId,
+    });
+    if (acting.error) {
+      res.status(403).json({ message: acting.error });
+      return;
+    }
     const latest = await store.latestVersion(code, actor.environment);
     const expected = Number(req.body?.version || 0);
     if (latest && expected !== latest) {
@@ -261,14 +275,15 @@ export function createApp() {
       return;
     }
     const record = normalizeReview({ ...req.body, code, kind: "review" });
-    record.preparedBy = existing?.preparedBy || actor.session.email;
+    if (acting.practice) record.projectId = PRACTICE_PROJECT;
+    record.preparedBy = existing?.preparedBy || acting.email;
     record.version = Math.max(latest, expected) + 1;
-    const block = privilegeDecision({ email: actor.session.email, role: actor.grant.role }, existing, record);
+    const block = privilegeDecision({ email: acting.email, role: acting.role }, existing, record);
     if (block) {
       res.status(403).json({ message: block });
       return;
     }
-    if (record.status === "Approved") record.reviewedBy = actor.session.email;
+    if (record.status === "Approved") record.reviewedBy = acting.email;
     const saved = await store.saveItem({
       code,
       kind: "review",
@@ -281,10 +296,65 @@ export function createApp() {
       environment: actor.environment,
       version: record.version,
       savedBy: actor.session.email,
-      changeNote: record.changeNote || "Saved from the workbench.",
+      changeNote: acting.practice
+        ? `Practice ${acting.role}. ${record.changeNote || "Saved from the workbench."}`.slice(0, 300)
+        : (record.changeNote || "Saved from the workbench."),
       snapshot: JSON.stringify(record),
     });
     res.json(parseReview(saved) || record);
+  });
+
+  app.post("/api/workbench/practice", async (req, res) => {
+    const actor = await grantedActor(req);
+    if (actor.error) {
+      res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    if (actor.environment !== "development" || actor.grant.role !== "administrator" || !designatedAdministrators().includes(actor.session.email)) {
+      res.status(403).json({ message: "Only a designated administrator can load practice records in development." });
+      return;
+    }
+    const items = (await store.listItems(actor.environment)).map(parseReview).filter(Boolean);
+    const plan = practiceSeedPlan(items);
+    if (plan.blocked.length) {
+      res.status(409).json({ message: "A practice code already belongs to another project. No practice record was written.", blocked: plan.blocked });
+      return;
+    }
+    const projects = await store.listProjects(actor.environment);
+    if (!projects.some((project) => project.code === PRACTICE_PROJECT)) {
+      await store.saveProject({
+        environment: actor.environment,
+        code: PRACTICE_PROJECT,
+        name: "Practice reviews",
+        status: "Active",
+        ownerEmail: actor.session.email,
+        note: "Development samples for create, review, and approve. This project is not the MDC register.",
+        createdBy: actor.session.email,
+      });
+    }
+    for (const sample of plan.created) {
+      const record = { ...sample, version: 1 };
+      await store.saveItem({
+        code: record.code,
+        kind: "review",
+        status: record.status,
+        note: JSON.stringify(record),
+        environment: actor.environment,
+      });
+      await store.appendVersion({
+        code: record.code,
+        environment: actor.environment,
+        version: 1,
+        savedBy: actor.session.email,
+        changeNote: "Practice sample for development testing.",
+        snapshot: JSON.stringify(record),
+      });
+    }
+    res.json({
+      project: PRACTICE_PROJECT,
+      created: plan.created.map((item) => item.code),
+      skipped: plan.skipped,
+    });
   });
 
   app.post("/api/workbench/import", async (req, res) => {
