@@ -170,6 +170,15 @@ table { width: 100%; max-width: 980px; }
 .present-metric strong { display: block; font-size: 28px; color: var(--navy); font-variant-numeric: tabular-nums; }
 .present-metric span, .present-sheet p { color: var(--muted); }
 .map-picture { width: 100%; height: auto; display: block; }
+.wizard { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 16px; }
+.wizard-steps { display: grid; gap: 6px; align-content: start; }
+.wizard-steps button { text-align: left; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 8px 10px; }
+.wizard-steps button.on { border-color: var(--navy); background: #f7f8fa; }
+.wizard-panel { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 24px; display: grid; gap: 12px; align-content: start; }
+.wizard-panel h2 { margin: 0; font-size: 22px; line-height: 1.3; color: var(--navy); }
+.locked-note, .grant-list { background: #f7f8fa; border-radius: 6px; padding: 10px 12px; }
+.grant-list { margin: 0; display: grid; gap: 6px; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
 .present-sheet table { max-width: none; }
 #project { min-width: 180px; }
 nav { max-height: none; }
@@ -183,7 +192,7 @@ nav { max-height: none; }
   .top, .brief-bar { flex-direction: column; align-items: stretch; }
   .slide { min-height: 0; padding: 20px; }
   .slide h2 { font-size: 22px; }
-  .preview-strip, .present-metrics { grid-template-columns: 1fr 1fr; }
+  .preview-strip, .present-metrics, .wizard { grid-template-columns: 1fr; }
   .present-cover, .present-sheet { padding: 20px; }
   .present-cover h2, .present-sheet h2 { font-size: 22px; }
 }

@@ -8,7 +8,8 @@ import {
   isAllowedDomain,
 } from "./policy.js";
 import { cleanEmail, openStore, validEnvironment, validRole } from "./store.js";
-import { approvalBlock, applyImportRow, cleanProjectId, normalizeReview, validRecordCode } from "../public/rules.js";
+import { applyImportRow, cleanProjectId, normalizeReview, validRecordCode } from "../public/rules.js";
+import { importPrivilege, libraryPrivilege, privilegeDecision, projectPrivilege, restorePrivilege } from "../public/privileges.js";
 import { BUILT_IN_PROJECT, validNewProjectCode, vendorKey } from "../public/boards.js";
 import { lookupSources, sourceStatus } from "./sources.js";
 import { rowsFromWorkbook, workbookFromRows } from "./sheet.js";
@@ -162,6 +163,10 @@ export function createApp() {
       res.status(401).json({ message: "Sign-in is required." });
       return;
     }
+    if (grant.role !== "administrator") {
+      res.status(403).json({ message: "This path does not store an analysis record." });
+      return;
+    }
     const code = String(req.body?.code || "").trim();
     const status = String(req.body?.status || "Open").trim();
     const note = String(req.body?.note || "");
@@ -181,7 +186,15 @@ export function createApp() {
     }
     const email = cleanEmail(req.body?.email);
     const role = String(req.body?.role || "");
-    const environment = String(req.body?.environment || currentEnvironment());
+    const environment = currentEnvironment();
+    if (req.body?.environment && String(req.body.environment) !== environment) {
+      res.status(403).json({ message: "A grant can be made only for this environment." });
+      return;
+    }
+    if (email && email === session.email) {
+      res.status(403).json({ message: "Grant a different person. Replacing your own role would remove your administrator access." });
+      return;
+    }
     if (!email || !isAllowedDomain(email) || !validRole(role) || !validEnvironment(environment)) {
       res.status(400).json({ message: "The grant was not saved. Use an allowed domain, a known role, and one environment." });
       return;
@@ -250,14 +263,12 @@ export function createApp() {
     const record = normalizeReview({ ...req.body, code, kind: "review" });
     record.preparedBy = existing?.preparedBy || actor.session.email;
     record.version = Math.max(latest, expected) + 1;
-    if (record.status === "Approved") {
-      record.reviewedBy = actor.session.email;
-      const block = approvalBlock({ email: actor.session.email, role: actor.grant.role }, record);
-      if (block) {
-        res.status(400).json({ message: block });
-        return;
-      }
+    const block = privilegeDecision({ email: actor.session.email, role: actor.grant.role }, existing, record);
+    if (block) {
+      res.status(403).json({ message: block });
+      return;
     }
+    if (record.status === "Approved") record.reviewedBy = actor.session.email;
     const saved = await store.saveItem({
       code,
       kind: "review",
@@ -282,6 +293,10 @@ export function createApp() {
       res.status(actor.error).json({ message: actor.message });
       return;
     }
+    if (actor.grant.role !== "nstt") {
+      res.status(403).json({ message: "Only the NSTT role can import register updates." });
+      return;
+    }
     const rows = Array.isArray(req.body?.rows) ? req.body.rows.slice(0, 40) : [];
     if (!rows.length) {
       res.status(400).json({ message: "The import file has no register rows." });
@@ -294,7 +309,16 @@ export function createApp() {
     let rejected = 0;
     const batchId = randomBytes(8).toString("hex");
     for (const row of rows) {
-      const outcome = applyImportRow(current.get(String(row.code || "").trim().toUpperCase()), row, actor.session.email);
+      const existing = current.get(String(row.code || "").trim().toUpperCase());
+      const outcome = applyImportRow(existing, row, actor.session.email);
+      if (outcome.result === "applied") {
+        const privilege = importPrivilege(actor.grant.role, existing, outcome.record);
+        if (privilege) {
+          rejected += 1;
+          results.push({ code: outcome.code, result: "rejected", message: privilege });
+          continue;
+        }
+      }
       if (outcome.result === "rejected") {
         rejected += 1;
         results.push({ code: outcome.code, result: outcome.result, message: outcome.message });
@@ -398,9 +422,15 @@ export function createApp() {
     }
     const latest = await store.latestVersion(code, actor.environment);
     const restored = normalizeReview(JSON.parse(prior.snapshot));
+    const current = parseReview((await store.listItems(actor.environment)).find((row) => row.code === code));
+    const privilege = restorePrivilege(actor.grant.role, restored, current);
+    if (privilege) {
+      res.status(403).json({ message: privilege });
+      return;
+    }
     restored.version = latest + 1;
-    restored.status = restored.status === "Approved" ? "In review" : restored.status;
-    restored.changeNote = `Restored version ${version} as version ${restored.version}.`;
+    if (restored.status === "Approved" || restored.status === "In review") restored.status = "Returned";
+    restored.changeNote = `Restored version ${version} as version ${restored.version}. An approved or in-review snapshot comes back as returned.`;
     await store.saveItem({
       code,
       kind: "review",
@@ -433,6 +463,11 @@ export function createApp() {
     const actor = await grantedActor(req);
     if (actor.error) {
       res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    const privilege = projectPrivilege(actor.grant.role);
+    if (privilege) {
+      res.status(403).json({ message: privilege });
       return;
     }
     const code = String(req.body?.code || "").trim().toUpperCase();
@@ -476,6 +511,11 @@ export function createApp() {
       res.status(actor.error).json({ message: actor.message });
       return;
     }
+    const privilege = libraryPrivilege(actor.grant.role);
+    if (privilege) {
+      res.status(403).json({ message: privilege });
+      return;
+    }
     const name = String(req.body?.name || "").trim().slice(0, 300);
     if (name.length < 2) {
       res.status(400).json({ message: "Enter the vendor name before saving it." });
@@ -495,6 +535,11 @@ export function createApp() {
     const actor = await grantedActor(req);
     if (actor.error) {
       res.status(actor.error).json({ message: actor.message });
+      return;
+    }
+    const privilege = libraryPrivilege(actor.grant.role);
+    if (privilege) {
+      res.status(403).json({ message: privilege });
       return;
     }
     const code = String(req.body?.code || "").trim().toUpperCase().slice(0, 40);
@@ -557,7 +602,11 @@ export function createApp() {
       res.status(403).json({ message: "Only a designated administrator can review grants." });
       return;
     }
-    const environment = validEnvironment(req.query.environment) ? String(req.query.environment) : currentEnvironment();
+    const environment = currentEnvironment();
+    if (req.query.environment && String(req.query.environment) !== environment) {
+      res.status(403).json({ message: "Grants can be reviewed only for this environment." });
+      return;
+    }
     res.json({ environment, grants: await store.listGrants(environment) });
   });
 
