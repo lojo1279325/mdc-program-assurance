@@ -84,7 +84,8 @@ function visibleItems() {
 }
 
 function selected() {
-  return state.items.find((item) => item.code === state.selected) || visibleItems()[0] || null;
+  const visible = visibleItems();
+  return visible.find((item) => item.code === state.selected) || visible[0] || null;
 }
 
 function setNotice(text) {
@@ -199,7 +200,8 @@ function drawOutputs(items = projectItems()) {
     <p class="label">Action list</p>
     ${actions.length ? actions.map((action) => `<p>${esc(action.text)}</p>`).join("") : "<p>No open actions. Add a review to generate the list.</p>"}
     ${allActions.length > actions.length ? `<p class="quiet">${allActions.length - actions.length} more actions are in the exported register.</p>` : ""}
-    <div class="row-actions"><button type="button" id="download" class="primary">Download register</button></div>
+    <p class="quiet">This download follows the selected project. The workbook export on Updates covers the full register.</p>
+    <div class="row-actions"><button type="button" id="download" class="primary">Download selected project</button></div>
   </div>
   <div style="overflow:auto;margin-top:12px;">
     <table>
@@ -402,6 +404,8 @@ function bind() {
     button.addEventListener("click", () => {
       state.project = button.dataset.project;
       state.view = "queue";
+      const visible = visibleItems();
+      state.selected = visible[0]?.code || "";
       setNotice(`Showing ${state.project}. A blank project id still belongs to MDC until a record is saved into another project.`);
       render();
     });
@@ -518,13 +522,13 @@ async function restoreVersion(version) {
 }
 
 function exportRegister() {
-  const rows = state.client ? clientView(state.items) : state.items.map(normalizeReview);
+  const rows = state.client ? clientView(projectItems()) : projectItems().map(normalizeReview);
   if (!rows.length) return;
   const headers = Object.keys(rows[0]);
   const csv = [headers.join(","), ...rows.map((row) => headers.map((key) => `"${String(row[key] ?? "").replaceAll('"', '""')}"`).join(","))].join("\n");
   const link = document.createElement("a");
   link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-  link.download = state.client ? "client-register.csv" : "decision-register.csv";
+  link.download = state.client ? `${state.project}-client-register.csv` : `${state.project}-decision-register.csv`;
   link.click();
   URL.revokeObjectURL(link.href);
 }
@@ -546,6 +550,8 @@ function syncProjectSelect() {
 
 document.querySelector("#project").addEventListener("change", (event) => {
   state.project = event.target.value;
+  const visible = visibleItems();
+  state.selected = visible[0]?.code || "";
   setNotice(`Showing ${state.project}. Metrics, cards, and dashboards follow this project. The workbook export still covers the full register.`);
   render();
 });
