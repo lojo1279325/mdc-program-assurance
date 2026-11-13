@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { approvalBlock, normalizeReview } from "../public/rules.js";
 import { importPrivilege, libraryPrivilege, privilegeDecision, projectPrivilege, restorePrivilege } from "../public/privileges.js";
-import { drawWizard } from "../public/wizard.js";
+import { analysisRecord, drawWizard } from "../public/wizard.js";
 
 const ready = normalizeReview({
   code: "P010",
@@ -64,6 +64,49 @@ test("import, restore, project, and library writes stay with the owning role", (
   assert.equal(projectPrivilege("administrator"), "");
   assert.match(libraryPrivilege("trade"), /read the library/);
   assert.equal(libraryPrivilege("nstt"), "");
+});
+
+test("each role opens a record it can act on", () => {
+  const items = [
+    { code: "FB001", status: "In review", ownerRole: "nstt", reviewerRole: "cpi", tradeSensitive: false },
+    { code: "FB002", status: "Open", ownerRole: "nstt", reviewerRole: "cpi", tradeSensitive: false },
+    { code: "R-04", status: "Open", ownerRole: "trade", reviewerRole: "nstt", tradeSensitive: true },
+  ];
+  assert.equal(analysisRecord("nstt", items, "FB001").code, "FB002");
+  assert.equal(analysisRecord("cpi", items, "FB002").code, "FB001");
+  assert.equal(analysisRecord("trade", items, "FB001").code, "R-04");
+});
+
+test("the NSTT wizard can prepare and send, and cannot approve", () => {
+  const open = { ...ready, status: "Open" };
+  const handoff = drawWizard({ role: "nstt", step: 6, record: open, actorEmail: "analyst@blackengtech.com" });
+  assert.match(handoff, /Send to review/);
+  assert.equal(handoff.includes("Approve"), false);
+  assert.match(drawWizard({ role: "nstt", step: 0, record: open }), /Start a new analysis/);
+  assert.match(drawWizard({ role: "nstt", step: 5, record: open }), /does not change the risk band/);
+});
+
+test("CPI can return an incomplete review and cannot approve it", () => {
+  const incomplete = { ...ready, action: "", status: "In review" };
+  const decision = drawWizard({ role: "cpi", step: 4, record: incomplete, waiting: [incomplete], actorEmail: "reviewer@alvarezandmarsal.com" });
+  assert.match(decision, /Return/);
+  assert.match(decision, /Approval requires an action/);
+  assert.equal(decision.includes(">Approve<"), false);
+  assert.equal(decision.includes("name=\"title\""), false);
+});
+
+test("Trade prepares its open record when nothing is waiting, and can note a sensitive review without approving it", () => {
+  const owned = { ...ready, code: "R-04", status: "Open", ownerRole: "trade", reviewerRole: "nstt", tradeSensitive: true };
+  const prepare = drawWizard({ role: "trade", step: 0, record: owned, waiting: [] });
+  assert.match(prepare, /No record is waiting on Trade for review/);
+  assert.match(prepare, /Save this step/);
+  const sensitive = { ...ready, tradeSensitive: true, reviewerRole: "cpi", status: "In review" };
+  const note = drawWizard({ role: "trade", step: 3, record: sensitive, waiting: [sensitive], actorEmail: "trade@alvarezandmarsal.com" });
+  assert.match(note, /Save note/);
+  const decision = drawWizard({ role: "trade", step: 4, record: sensitive, waiting: [sensitive], actorEmail: "trade@alvarezandmarsal.com" });
+  assert.equal(decision.includes(">Approve<"), false);
+  const assigned = drawWizard({ role: "trade", step: 4, record: { ...ready, reviewerRole: "trade", status: "In review" }, actorEmail: "trade@alvarezandmarsal.com" });
+  assert.match(assigned, /data-wizard="approve"/);
 });
 
 test("the wizard follows the signed-in role and does not print a preparer email", () => {
