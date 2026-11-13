@@ -24,6 +24,7 @@ import { drawPresentation, presentationSlides } from "./present.js";
 import { briefToPptx } from "./pptx.js";
 import { recordAccess } from "./privileges.js";
 import { analysisRecord, analysisSteps, drawWizard } from "./wizard.js";
+import { fieldBox, guideBanner, knownValues } from "./guidance.js";
 
 const state = {
   items: [],
@@ -163,6 +164,8 @@ function render() {
         canGrant: Boolean(state.session?.administrator),
         grants: state.grants,
         actorEmail: state.session?.email || "",
+        items: projectItems(),
+        library: state.library,
       });
     },
   };
@@ -192,7 +195,7 @@ function drawQueue() {
     return `<div class="pane"><p>No review records yet.</p><p class="quiet">${esc(hint)}</p></div>`;
   }
   return `<div class="split">
-    <div class="list">${items.map((item) => `<button type="button" class="item ${current && current.code === item.code ? "on" : ""}" data-code="${esc(item.code)}">
+    <div class="list">${items.map((item) => `<button type="button" class="item posture-${posture(item.action)} ${current && current.code === item.code ? "on" : ""}" data-code="${esc(item.code)}">
       <strong>${esc(item.code)} ${esc(item.title)}</strong>
       <small>${esc(item.layer)} · v${esc(item.version || 0)} · ${esc(item.ownerRole)} prepares · ${esc(item.reviewerRole)} reviews</small>
       ${pills(item)}
@@ -205,7 +208,7 @@ function drawCards() {
   const items = visibleItems();
   if (!items.length) return `<div class="pane"><p>No cards yet. Import the register or add a review.</p></div>`;
   const shown = items.slice(0, 12);
-  return `<p class="quiet">Showing ${shown.length} of ${items.length} cards. Search to narrow the list.</p><div class="cards">${shown.map((item) => `<article class="card">
+  return `<p class="quiet">Showing ${shown.length} of ${items.length} cards. Search to narrow the list.</p><div class="cards">${shown.map((item) => `<article class="card tone-${posture(item.action)}">
     <p class="label">${esc(item.code)} · ${esc(item.stage)}</p>
     <h2 style="font-size:16px;margin:4px 0 8px;">${esc(item.title || "Untitled review")}</h2>
     ${pills(item)}
@@ -227,7 +230,7 @@ function drawMetrics(items = projectItems()) {
   </div>
   <div class="pane" style="margin-top:12px;">
     <p class="label">Action mix</p>
-    ${Object.entries(count.byAction).map(([name, value]) => `<p>${esc(name)} <strong class="num" style="display:inline;font-size:14px;">${value}</strong></p><div class="bar"><span style="width:${Math.round((value / max) * 100)}%"></span></div>`).join("")}
+    ${Object.entries(count.byAction).map(([name, value]) => `<p>${esc(name)} <strong class="num" style="display:inline;font-size:14px;">${value}</strong></p><div class="bar ${posture(name === "Not set" ? "" : name)}"><span style="width:${Math.round((value / max) * 100)}%"></span></div>`).join("")}
   </div>
   <div class="pane" style="margin-top:12px;">
     ${card.sentences.map((sentence) => `<p>${esc(sentence)}</p>`).join("")}
@@ -293,7 +296,7 @@ function drawUpdates() {
     <p>${state.items.length} records are loaded. ${waiting} still need an action. ${inReview} are in review.</p>
     <div class="row-actions">
       <button type="button" id="export-workbook" class="primary">Export workbook</button>
-      ${state.session?.role === "nstt" ? `<label class="ghost">Choose workbook <input id="import-file" type="file" accept=".xlsx" /></label><button type="button" id="import-workbook">Import workbook</button>` : ""}
+      ${state.session?.role === "nstt" ? `<label class="field tone-note">Choose workbook <input id="import-file" type="file" accept=".xlsx" title="Choose the workbook you exported. Edit the Register sheet, then import it." /><span class="field-example">Example: the workbook you exported, with edits on the Register sheet.</span></label><button type="button" id="import-workbook">Import workbook</button>` : ""}
     </div>
     <p class="quiet" id="import-result">${current ? `${current.code} is selected at version ${current.version || 0}.` : "Select a record to see its versions."}</p>
   </div>
@@ -318,30 +321,36 @@ function form(item) {
       ${access.canSend ? `<button type="button" data-status="In review">Send to review</button>` : ""}
       ${access.canReturn ? `<button type="button" data-status="Returned">Return</button>` : ""}
       ${access.canApprove ? `<button type="button" data-status="Approved">Approve</button>` : ""}`;
+  const known = knownValues(state.items, state.library);
+  const projectChoices = state.projects.map((project) => ({ value: project.code, label: `${project.code}. ${project.name}` }));
+  if (!projectChoices.some((choice) => choice.value === (item.projectId || "MDC"))) {
+    projectChoices.push({ value: item.projectId || "MDC", label: item.projectId || "MDC" });
+  }
   return `<form class="form" id="review-form" data-mode="${esc(access.mode)}">
+    ${guideBanner()}
     <p class="label">${esc(item.code)} · version ${esc(item.version || 0)} · ${esc(item.stage)} · ${esc(item.layer)}${item.sourceCategory ? ` · source category ${esc(item.sourceCategory)}` : ""}</p>
     <p class="locked-note">${esc(access.message)}</p>
     <div class="row-actions">${buttons || `<button type="button" data-open="analysis">Open analysis</button>`}</div>
     ${access.canApprove && block ? `<p class="block">${esc(block)}</p>` : ""}
-    ${access.mode === "prepare" ? `<label class="field">Title <input name="title" value="${esc(item.title)}" /></label>
+    ${access.mode === "prepare" ? `${fieldBox({ key: "title", value: item.title, idPrefix: "review" })}
     <div class="grid-2">
-      <label class="field">Layer <select name="layer">${options(LAYERS, item.layer)}</select></label>
-      <label class="field">Stage <select name="stage">${options(STAGES, item.stage)}</select></label>
-      <label class="field">Risk <select name="risk">${options(RISK, item.risk)}</select></label>
-      <label class="field">Confidence <select name="confidence">${options(CONFIDENCE, item.confidence)}</select></label>
-      <label class="field">Action <select name="action"><option value="">Not set</option>${options(ACTIONS, item.action)}</select></label>
-      <label class="field">Project <select name="projectId">${options(state.projects.map((project) => project.code), item.projectId || "MDC")}</select></label>
-      <label class="field">Vendor <input name="supplier" value="${esc(item.supplier || "")}" /></label>
-      <label class="field">Part code <input name="sourceItem" value="${esc(item.sourceItem || "")}" /></label>
-      <label class="field">Drawing <input name="drawing" value="${esc(item.drawing || "")}" /></label>
+      ${fieldBox({ key: "layer", value: item.layer, idPrefix: "review" })}
+      ${fieldBox({ key: "stage", value: item.stage, idPrefix: "review" })}
+      ${fieldBox({ key: "risk", value: item.risk, idPrefix: "review" })}
+      ${fieldBox({ key: "confidence", value: item.confidence, idPrefix: "review" })}
+      ${fieldBox({ key: "action", value: item.action || "", idPrefix: "review" })}
+      ${fieldBox({ key: "projectId", value: item.projectId || "MDC", choices: projectChoices, idPrefix: "review" })}
+      ${fieldBox({ key: "supplier", value: item.supplier || "", suggestions: known.vendors, idPrefix: "review" })}
+      ${fieldBox({ key: "sourceItem", value: item.sourceItem || "", suggestions: known.parts, idPrefix: "review" })}
+      ${fieldBox({ key: "drawing", value: item.drawing || "", suggestions: known.drawings, idPrefix: "review" })}
     </div>
-    <p class="quiet">Owner role stays ${esc(item.ownerRole)}. Reviewer role stays ${esc(item.reviewerRole)}. Those assignments are not changed from this form.</p>
-    <label class="field">Condition <textarea name="condition">${esc(item.condition)}</textarea></label>
-    <label class="field">Future policy and lifecycle <textarea name="lifecycle">${esc(item.lifecycle)}</textarea></label>
-    <label class="field">Evidence <textarea name="evidence">${esc(item.evidence)}</textarea></label>
-    <label class="field">Open fact <textarea name="openFact">${esc(item.openFact)}</textarea></label>
-    <label class="field"><span>Trade sensitive</span> <input name="tradeSensitive" type="checkbox" ${item.tradeSensitive ? "checked" : ""} /></label>` : `<p><strong>Title.</strong> ${esc(item.title || "Not recorded")}</p>${facts}`}
-    ${access.canNote ? `<label class="field">Review note <textarea name="update" placeholder="What did you check?"></textarea></label>` : ""}
+    <p class="quiet">Owner role stays ${esc(item.ownerRole)}. Reviewer role stays ${esc(item.reviewerRole)}. Those assignments are not changed from this form. Hover Guide on a field if you need the kind of information it takes.</p>
+    ${fieldBox({ key: "condition", value: item.condition, idPrefix: "review" })}
+    ${fieldBox({ key: "lifecycle", value: item.lifecycle, idPrefix: "review" })}
+    ${fieldBox({ key: "evidence", value: item.evidence, idPrefix: "review" })}
+    ${fieldBox({ key: "openFact", value: item.openFact, idPrefix: "review" })}
+    ${fieldBox({ key: "tradeSensitive", value: item.tradeSensitive ? "yes" : "no", idPrefix: "review" })}` : `<p><strong>Title.</strong> ${esc(item.title || "Not recorded")}</p>${facts}`}
+    ${access.canNote ? fieldBox({ key: "update", idPrefix: "review" }) : ""}
     ${updates}
   </form>`;
 }
@@ -369,7 +378,7 @@ function readForm(formElement, item) {
     supplier: data.get("supplier"),
     sourceItem: data.get("sourceItem"),
     drawing: data.get("drawing"),
-    tradeSensitive: data.get("tradeSensitive") === "on",
+    tradeSensitive: data.get("tradeSensitive") === "yes" || data.get("tradeSensitive") === "on",
     preparedBy: item.preparedBy || state.session?.email || "",
   }) : normalizeReview(item);
   if (update) {
@@ -418,6 +427,17 @@ function bind() {
     button.addEventListener("click", () => {
       state.selected = button.dataset.code;
       render();
+    });
+  });
+  main.querySelectorAll("[data-fill]").forEach((select) => {
+    select.addEventListener("change", () => {
+      const target = select.form?.elements.namedItem(select.dataset.fill);
+      if (!target || !select.value || String(target.value || "").trim()) {
+        select.value = "";
+        return;
+      }
+      target.value = select.value;
+      select.value = "";
     });
   });
   const formElement = document.querySelector("#review-form");
@@ -829,6 +849,17 @@ document.querySelector("#load-method").addEventListener("click", async () => {
   setNotice("The method checklist is ready. It does not contain the client register. Save still requires a granted role.");
   render();
   for (const item of additions) await persist(item, true);
+});
+
+document.addEventListener("click", (event) => {
+  const mark = event.target.closest(".field-mark");
+  document.querySelectorAll(".field-mark[aria-expanded='true']").forEach((node) => {
+    if (node !== mark) node.setAttribute("aria-expanded", "false");
+  });
+  if (!mark) return;
+  event.preventDefault();
+  event.stopPropagation();
+  mark.setAttribute("aria-expanded", mark.getAttribute("aria-expanded") === "true" ? "false" : "true");
 });
 
 document.addEventListener("keydown", (event) => {

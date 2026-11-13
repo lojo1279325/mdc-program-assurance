@@ -1,4 +1,5 @@
-import { ACTIONS, STAGES, STATUSES } from "./rules.js";
+import { STAGES, STATUSES } from "./rules.js";
+import { fieldBox, knownValues } from "./guidance.js";
 import {
   BUILT_IN_PROJECT,
   buildLibrary,
@@ -44,11 +45,11 @@ export function drawWorkflow(items) {
     <p class="label">Status track</p>
     <p>${board.records} records are in this project. ${board.building} are still being built. ${board.inReview} are in review. ${board.approved} are approved.</p>
     <div class="graphic">${graphic.status}</div>
-    <ol class="track">${STATUSES.map((status) => `<li><strong class="num">${board.byStatus[status] || 0}</strong><span>${esc(status)}</span></li>`).join("")}</ol>
+    <ol class="track">${STATUSES.map((status) => `<li class="tone-${statusTone(status)}"><strong class="num">${board.byStatus[status] || 0}</strong><span>${esc(status)}</span></li>`).join("")}</ol>
     <p class="label">Stage track</p>
     <p>The review sequence is ${esc(STAGES.join(", "))}.</p>
     <div class="graphic">${graphic.stages}</div>
-    <ol class="track stages">${STAGES.map((stage) => `<li><strong class="num">${board.byStage[stage] || 0}</strong><span>${esc(stage)}</span></li>`).join("")}</ol>
+    <ol class="track stages">${STAGES.map((stage) => `<li class="tone-${stageTone(stage)}"><strong class="num">${board.byStage[stage] || 0}</strong><span>${esc(stage)}</span></li>`).join("")}</ol>
     <p>Open and Returned mean the record is still being built. In review means a different role has the record. Approved means a different person and a different role accepted it.</p>
   </div>`;
 }
@@ -109,24 +110,7 @@ export function drawLibrary(items, saved, projectId, query, client, role = "") {
   return `<div class="pane sentences">
     <p class="label">Libraries</p>
     <p>${library.vendors.length} vendor names and ${library.parts.length} parts are in this environment. Current evaluations below are for the selected project. A saved name stays in the library before a review exists.</p>
-    ${role === "administrator" || role === "nstt" ? `<form class="form" id="vendor-form">
-      <div class="grid-2">
-        <label class="field">Vendor name <input name="name" required /></label>
-        <label class="field">Country <input name="country" /></label>
-        <label class="field">Identifier <input name="identifier" /></label>
-        <label class="field">Note <input name="note" /></label>
-      </div>
-      <div class="row-actions"><button class="primary" type="submit">Add vendor</button></div>
-    </form>
-    <form class="form" id="part-form">
-      <div class="grid-2">
-        <label class="field">Part code <input name="code" required /></label>
-        <label class="field">Part name <input name="name" required /></label>
-        <label class="field">Drawing <input name="drawing" /></label>
-        <label class="field">Vendor name <input name="vendorName" /></label>
-      </div>
-      <div class="row-actions"><button type="submit">Add part</button></div>
-    </form>` : `<p>Only NSTT or an administrator can add a library name. Your role can read the library.</p>`}
+    ${role === "administrator" || role === "nstt" ? libraryForms(items, saved) : `<p>Only NSTT or an administrator can add a library name. Your role can read the library.</p>`}
   </div>
   <h2 class="section-title">Vendor names</h2>
   <p class="quiet">Showing ${Math.min(24, vendors.length)} of ${vendors.length}.</p>
@@ -136,10 +120,18 @@ export function drawLibrary(items, saved, projectId, query, client, role = "") {
   <div class="cards">${partCards || `<article class="card"><p>No parts in this view.</p></article>`}</div>`;
 }
 
+function statusTone(status) {
+  return { Open: "steel", "In review": "blue", Returned: "amber", Approved: "green" }[status] || "grey";
+}
+
+function stageTone(stage) {
+  return { Why: "navy", What: "blue", When: "steel", Where: "amber", Who: "green", How: "navy" }[stage] || "grey";
+}
+
 function libraryCard(row, kind, client) {
   const title = kind === "vendor" ? row.name : `${row.code} ${row.name}`;
   const current = row.current;
-  return `<article class="card">
+  return `<article class="card tone-${posture(current?.action)}">
     <p class="label">${kind === "vendor" ? "Vendor" : "Part"}${row.saved ? " · saved" : ""}</p>
     <h2 style="font-size:16px;margin:4px 0 8px;">${esc(title)}</h2>
     <p class="quiet">${row.evaluations} current evaluation${row.evaluations === 1 ? "" : "s"}. ${row.otherProjects} in other projects.</p>
@@ -158,14 +150,7 @@ export function drawSources(status, results, client) {
     <p>Federal Register is a public notice search. It is not a screening determination. The US Consolidated Screening List and Sayari run only when this environment has their credentials.</p>
     <p>A match is a source note. It does not set the action, and it does not change the risk band. A missing fact still lowers confidence, not the risk band.</p>
     <p>Federal Register is available. Screening list is ${connected.screeningList ? "connected" : "not connected"}. Sayari is ${connected.sayari ? "connected" : "not connected"}.</p>
-    ${client ? `<p>Source notes stay off the client view.</p>` : `<form class="form" id="source-form">
-      <div class="grid-2">
-        <label class="field">Name <input id="source-name" name="name" required /></label>
-        <label class="field">Country <input name="country" /></label>
-        <label class="field">Kind <select name="kind"><option value="vendor">Vendor</option><option value="part">Part</option></select></label>
-      </div>
-      <div class="row-actions"><button class="primary" type="submit">Check sources</button></div>
-    </form>`}
+    ${client ? `<p>Source notes stay off the client view.</p>` : sourceForm()}
   </div>
   ${client ? "" : `<div class="cards" style="margin-top:12px;">${(results || []).map((item) => `<article class="card"><p class="label">${esc(item.source)}</p><span class="pill grey">${esc(item.status)}</span><p>${esc(item.summary)}</p><p class="quiet">Observed ${esc(item.observedAt || "")}</p></article>`).join("") || `<article class="card"><p>No check yet. Enter a vendor or part name.</p></article>`}</div>`}`;
 }
@@ -178,10 +163,10 @@ export function drawProjects(projects, current, role = "") {
     <p>Selected project: ${esc(rows.find((item) => item.code === current)?.name || current)}.</p>
     ${role === "administrator" ? `<form class="form" id="project-form">
       <div class="grid-2">
-        <label class="field">Project code <input name="code" placeholder="POWER" required /></label>
-        <label class="field">Project name <input name="name" required /></label>
+        ${fieldBox({ key: "projectCode", name: "code", idPrefix: "project", required: true })}
+        ${fieldBox({ key: "projectName", name: "name", idPrefix: "project", required: true })}
       </div>
-      <label class="field">Note <input name="note" /></label>
+      ${fieldBox({ key: "projectNote", name: "note", idPrefix: "project" })}
       <div class="row-actions"><button class="primary" type="submit">Create project</button></div>
     </form>` : `<p>Only an administrator can create a project. You can open a project that already exists.</p>`}
   </div>
@@ -190,4 +175,38 @@ export function drawProjects(projects, current, role = "") {
   </div>`;
 }
 
-export { ACTIONS };
+function libraryForms(items, saved) {
+  const known = knownValues(items, saved);
+  return `<form class="form" id="vendor-form">
+      <div class="grid-2">
+        ${fieldBox({ key: "vendorName", name: "name", suggestions: known.vendors, idPrefix: "vendor", required: true })}
+        ${fieldBox({ key: "country", name: "country", suggestions: known.countries, idPrefix: "vendor" })}
+        ${fieldBox({ key: "identifier", name: "identifier", idPrefix: "vendor" })}
+        ${fieldBox({ key: "vendorNote", name: "note", idPrefix: "vendor" })}
+      </div>
+      <div class="row-actions"><button class="primary" type="submit">Add vendor</button></div>
+    </form>
+    <form class="form" id="part-form">
+      <div class="grid-2">
+        ${fieldBox({ key: "partCode", name: "code", suggestions: known.parts, idPrefix: "part", required: true })}
+        ${fieldBox({ key: "partName", name: "name", suggestions: known.partNames, idPrefix: "part", required: true })}
+        ${fieldBox({ key: "drawing", name: "drawing", suggestions: known.drawings, idPrefix: "part" })}
+        ${fieldBox({ key: "partVendor", name: "vendorName", suggestions: known.vendors, idPrefix: "part" })}
+      </div>
+      <div class="row-actions"><button type="submit">Add part</button></div>
+    </form>`;
+}
+
+function sourceForm() {
+  const known = knownValues();
+  return `<form class="form" id="source-form">
+      <div class="grid-2">
+        ${fieldBox({ key: "sourceName", name: "name", idPrefix: "source", required: true })}
+        ${fieldBox({ key: "country", name: "country", suggestions: known.countries, idPrefix: "source" })}
+        ${fieldBox({ key: "sourceKind", name: "kind", value: "vendor", idPrefix: "source" })}
+      </div>
+      <div class="row-actions"><button class="primary" type="submit">Check sources</button></div>
+    </form>`;
+}
+
+export { ACTIONS } from "./rules.js";

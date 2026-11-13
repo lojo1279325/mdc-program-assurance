@@ -47,12 +47,18 @@
             <p id="notice" class="quiet">Loading the development workspace.</p>
           </div>
           <div class="top-actions">
-            <label class="search">Project
-              <select id="project"></select>
-            </label>
-            <label class="search">Search
-              <input id="search" type="search" placeholder="Title or code" />
-            </label>
+            <div class="search field">
+              <span class="field-label">Project <button type="button" class="field-mark" aria-expanded="false" aria-describedby="project-tip">Guide</button></span>
+              <select id="project" aria-describedby="project-example"></select>
+              <span class="field-example" id="project-example">Example: MDC for the current register.</span>
+              <span class="field-tip" id="project-tip" role="tooltip">Choose the project whose records you want to see. A new project starts empty and does not move the current register.</span>
+            </div>
+            <div class="search field">
+              <span class="field-label">Search <button type="button" class="field-mark" aria-expanded="false" aria-describedby="search-tip">Guide</button></span>
+              <input id="search" type="search" aria-describedby="search-example" />
+              <span class="field-example" id="search-example">Example: a record code or a vendor legal name.</span>
+              <span class="field-tip" id="search-tip" role="tooltip">Search by record code, title, or vendor name. The list narrows as you type.</span>
+            </div>
             <button type="button" id="client-toggle" class="ghost">Client view</button>
           </div>
         </header>
