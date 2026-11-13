@@ -31,7 +31,7 @@ export function designatedAdministrators() {
     .split(",")
     .map((item) => normalizeEmail(item))
     .filter(Boolean);
-  return configured.length ? configured : ["louverture.jones@blackengtech.com"];
+  return configured.length ? configured : ["louverture.jones@blackengtech.com", "louverture.jones@alvarezandmarsal.com"];
 }
 
 export function decideAccess({ email, emailVerified, grantRole, grantRevoked }) {

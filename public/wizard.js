@@ -21,7 +21,7 @@ const REVIEW_STEPS = [
 
 const ADMIN_STEPS = [
   { id: "role", title: "Confirm your role", body: "You grant access for this environment. You do not prepare or approve an analysis." },
-  { id: "grant", title: "Grant a working role", body: "Grant NSTT, CPI, or Trade to a different person on an allowed domain. A domain match is not a grant. This grant does not apply to production, and it does not replace your own access." },
+  { id: "grant", title: "Grant a working role", body: "Grant Administrator, NSTT, CPI, or Trade to a different person on an allowed domain. A domain match is not a grant. This grant does not apply to production, and it does not replace your own access." },
   { id: "project", title: "Create a project only if a new review set is needed", body: "The current register stays on MDC. A new project starts empty. Do not move existing records by import." },
   { id: "sequence", title: "Read the analysis sequence", body: "The analysis sequence is Why, What, When, Where, Who, then How. NSTT prepares it. CPI reviews parts and suppliers. Trade reviews trade-sensitive conditions. A different person in the reviewer role approves." },
   { id: "result", title: "Read the decision line", body: "Open the brief when you need the decision line. It uses approved records only. This role cannot approve a record." },
@@ -149,7 +149,7 @@ export function drawWizard({ role = "", step = 0, record = null, waiting = [], e
   } else {
     if (current.id === "grant") {
       panel += canGrant
-        ? `<form class="form" id="grant-form"><div class="grid-2"><label class="field">Email <input name="email" type="email" required /></label><label class="field">Role <select name="role"><option value="nstt">NSTT</option><option value="cpi">CPI</option><option value="trade">Trade</option></select></label></div><p class="quiet">This grant is saved for ${esc(environment)} only.</p><div class="row-actions"><button type="submit" class="primary">Grant role</button></div></form>`
+        ? `<form class="form" id="grant-form"><div class="grid-2"><label class="field">Email <input name="email" type="email" required /></label><label class="field">Role <select name="role"><option value="administrator">Administrator</option><option value="nstt">NSTT</option><option value="cpi">CPI</option><option value="trade">Trade</option></select></label></div><p class="quiet">This grant is saved for ${esc(environment)} only.</p><div class="row-actions"><button type="submit" class="primary">Grant role</button></div></form>`
         : `<p>Only a designated administrator can grant a role for this environment.</p>`;
       if (grants.length) {
         panel += `<ul class="grant-list">${grants.slice(0, 12).map((grant) => `<li>${esc(grant.email)} · ${esc(ROLE_LABEL[grant.role] || grant.role)}${grant.revokedAt ? " · revoked" : ""}</li>`).join("")}</ul>`;

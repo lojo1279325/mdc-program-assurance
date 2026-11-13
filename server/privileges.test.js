@@ -115,7 +115,8 @@ test("the wizard follows the signed-in role and does not print a preparer email"
   assert.match(nstt, /does not change the risk band/);
   assert.equal(nstt.includes("analyst@blackengtech.com"), false);
   const admin = drawWizard({ role: "administrator", step: 1, canGrant: true, environment: "development", grants: [{ email: "analyst@blackengtech.com", role: "nstt" }] });
-  assert.match(admin, /Grant NSTT, CPI, or Trade/);
+  assert.match(admin, /Grant Administrator, NSTT, CPI, or Trade/);
+  assert.match(admin, /value="administrator"/);
   assert.match(admin, /does not apply to production/);
   assert.equal(admin.includes("Approve"), false);
   const trade = drawWizard({ role: "trade", step: 4, record: { ...ready, reviewerRole: "trade" }, waiting: [{ ...ready, reviewerRole: "trade" }] });
