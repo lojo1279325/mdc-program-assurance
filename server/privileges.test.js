@@ -99,7 +99,7 @@ test("Trade prepares its open record when nothing is waiting, and can note a sen
   const owned = { ...ready, code: "R-04", status: "Open", ownerRole: "trade", reviewerRole: "nstt", tradeSensitive: true };
   const prepare = drawWizard({ role: "trade", step: 0, record: owned, waiting: [] });
   assert.match(prepare, /No record is waiting on Trade for review/);
-  assert.match(prepare, /Save this step/);
+  assert.match(prepare, /Save and continue/);
   const sensitive = { ...ready, tradeSensitive: true, reviewerRole: "cpi", status: "In review" };
   const note = drawWizard({ role: "trade", step: 3, record: sensitive, waiting: [sensitive], actorEmail: "trade@alvarezandmarsal.com" });
   assert.match(note, /Save note/);
