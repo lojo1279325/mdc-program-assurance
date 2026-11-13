@@ -40,6 +40,7 @@ const state = {
   sourceResults: [],
   slide: 0,
   wizardStep: 0,
+  practiceRole: "",
   grants: [],
   notice: "This is the development workspace. Production is unchanged. A granted role is required before a record is stored.",
 };
@@ -150,13 +151,13 @@ function render() {
     sources: () => drawSources(state.sourceStatus, state.sourceResults, state.client),
     projects: () => drawProjects(state.projects, state.project, state.session?.role || ""),
     analysis: () => {
-      const next = analysisRecord(state.session?.role || "", projectItems(), state.selected);
+      const next = analysisRecord(actingRole(), projectItems(), state.selected);
       if (next?.code && next.code !== state.selected) {
         state.selected = next.code;
         state.wizardStep = 0;
       }
       return drawWizard({
-        role: state.session?.role || "",
+        role: actingRole(),
         step: state.wizardStep,
         record: selected(),
         waiting: waitingForRole(),
@@ -170,6 +171,7 @@ function render() {
     },
   };
   syncProjectSelect();
+  syncPracticeBar();
   main.innerHTML = draw[state.view]();
   syncRoleControls();
   bind();
@@ -188,8 +190,10 @@ function drawQueue() {
   const items = visibleItems();
   const current = selected();
   if (!items.length) {
-    const role = state.session?.role || "";
-    const hint = role === "nstt"
+    const role = actingRole();
+    const hint = state.project === "PRACTICE"
+      ? "Load the practice records, then choose NSTT, CPI, or Trade. The MDC register stays unchanged."
+      : role === "nstt"
       ? "Start the method checklist, or open Analysis and start one review."
       : "Your role can read the register. It cannot start or import an analysis record.";
     return `<div class="pane"><p>No review records yet.</p><p class="quiet">${esc(hint)}</p></div>`;
@@ -303,12 +307,24 @@ function drawUpdates() {
   <div class="pane" style="margin-top:12px;" id="version-list"><p class="quiet">Version history loads for the selected record.</p></div>`;
 }
 
+function practiceAllowed() {
+  return state.session?.environment === "development" && state.session?.role === "administrator" && Boolean(state.session?.administrator);
+}
+
+function actingRole() {
+  return practiceAllowed() && state.practiceRole ? state.practiceRole : (state.session?.role || "");
+}
+
+function actingEmail() {
+  return practiceAllowed() && state.practiceRole ? `practice-${state.practiceRole}@development.local` : (state.session?.email || "");
+}
+
 function actor() {
-  return { email: state.session?.email || "", role: state.session?.role || "" };
+  return { email: actingEmail(), role: actingRole() };
 }
 
 function waitingForRole() {
-  const role = state.session?.role || "";
+  const role = actingRole();
   return projectItems().filter((item) => item.status === "In review" && (item.reviewerRole === role || (role === "trade" && item.tradeSensitive)));
 }
 
@@ -374,18 +390,18 @@ function readForm(formElement, item) {
     lifecycle: data.get("lifecycle"),
     evidence: data.get("evidence"),
     openFact: data.get("openFact"),
-    projectId: data.get("projectId"),
+    projectId: practiceAllowed() && state.practiceRole ? "PRACTICE" : data.get("projectId"),
     supplier: data.get("supplier"),
     sourceItem: data.get("sourceItem"),
     drawing: data.get("drawing"),
     tradeSensitive: data.get("tradeSensitive") === "yes" || data.get("tradeSensitive") === "on",
-    preparedBy: item.preparedBy || state.session?.email || "",
+    preparedBy: item.preparedBy || actingEmail(),
   }) : normalizeReview(item);
   if (update) {
     next.updates = [...item.updates, {
       at: new Date().toISOString(),
-      by: state.session?.email || "development",
-      role: state.session?.role || next.ownerRole,
+      by: actingEmail() || "development",
+      role: actingRole() || next.ownerRole,
       text: update,
     }];
   }
@@ -400,7 +416,7 @@ async function persist(item, quiet = false) {
   const response = await fetch("/api/workbench/items", {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: practiceHeaders(),
     body: JSON.stringify(item),
   });
   const body = await response.json();
@@ -672,8 +688,33 @@ document.querySelectorAll(".nav").forEach((button) => {
   });
 });
 
+function practiceHeaders() {
+  const headers = { "Content-Type": "application/json" };
+  if (practiceAllowed() && state.practiceRole) headers["X-Practice-Role"] = state.practiceRole;
+  return headers;
+}
+
+function nextPracticeCode(items) {
+  const numbers = items.map((item) => {
+    const match = String(item.code || "").match(/^S-(\d{2,4})$/);
+    return match ? Number(match[1]) : 0;
+  });
+  return `S-${String(Math.max(0, ...numbers) + 1).padStart(2, "0")}`;
+}
+
+function syncPracticeBar() {
+  const allowed = practiceAllowed();
+  const wrap = document.querySelector("#practice-wrap");
+  const load = document.querySelector("#load-practice");
+  if (wrap) wrap.hidden = !allowed;
+  if (load) load.hidden = !allowed;
+  const select = document.querySelector("#practice-role");
+  if (select && select.value !== state.practiceRole) select.value = state.practiceRole;
+}
+
 function syncRoleControls() {
-  const prepare = state.session?.role === "nstt";
+  const prepare = actingRole() === "nstt";
+  const methodPrepare = state.session?.role === "nstt";
   const add = document.querySelector("#add-record");
   const method = document.querySelector("#load-method");
   if (add) {
@@ -681,13 +722,13 @@ function syncRoleControls() {
     add.title = prepare ? "Start a new analysis record." : "Only the NSTT role can start an analysis record.";
   }
   if (method) {
-    method.disabled = !prepare;
-    method.title = prepare ? "Start the method checklist." : "Only the NSTT role can start the method checklist.";
+    method.disabled = !methodPrepare;
+    method.title = methodPrepare ? "Start the method checklist." : "Only the NSTT role can start the method checklist.";
   }
 }
 
 function wizardLimit() {
-  return Math.max(0, analysisSteps(state.session?.role || "", selected()).length - 1);
+  return Math.max(0, analysisSteps(actingRole(), selected()).length - 1);
 }
 
 async function wizardAction(action) {
@@ -738,29 +779,32 @@ async function saveWizardStep(event, formElement) {
   if (update) {
     next.updates = [...current.updates, {
       at: new Date().toISOString(),
-      by: state.session?.email || "",
-      role: state.session?.role || "",
+      by: actingEmail(),
+      role: actingRole(),
       text: update,
     }];
   }
+  if (practiceAllowed() && state.practiceRole) next.projectId = "PRACTICE";
   const saved = normalizeReview(next);
   saved.updates = next.updates;
   await persist(saved);
 }
 
 async function startAnalysis() {
-  if (state.session?.role !== "nstt") {
+  if (actingRole() !== "nstt") {
     setNotice("Only the NSTT role can start an analysis record.");
     return;
   }
+  const practicing = practiceAllowed() && state.practiceRole === "nstt";
   const item = normalizeReview({
-    code: nextCode(state.items),
-    title: "New review",
+    code: practicing ? nextPracticeCode(state.items) : nextCode(state.items),
+    title: practicing ? "Sample review" : "New review",
     ownerRole: "nstt",
     reviewerRole: "cpi",
-    projectId: state.project,
+    projectId: practicing ? "PRACTICE" : state.project,
     stage: "Why",
     layer: "Identification",
+    supplier: practicing ? "Example Supplier LLC" : "",
   });
   state.items = [...state.items, item];
   state.selected = item.code;
@@ -804,11 +848,15 @@ function syncProjectSelect() {
 }
 
 document.querySelector("#project").addEventListener("change", (event) => {
+  const leftPractice = Boolean(state.practiceRole && event.target.value !== "PRACTICE");
+  if (leftPractice) state.practiceRole = "";
   state.project = event.target.value;
   state.slide = 0;
   const visible = visibleItems();
   state.selected = visible[0]?.code || "";
-  setNotice(`Showing ${state.project}. Metrics, cards, and dashboards follow this project. The workbook export still covers the full register.`);
+  setNotice(leftPractice
+    ? "Practice role is off because this is not the practice project. Your administrator grant is unchanged."
+    : `Showing ${state.project}. Metrics, cards, and dashboards follow this project. The workbook export still covers the full register.`);
   render();
 });
 
@@ -825,12 +873,68 @@ document.querySelector("#client-toggle").addEventListener("click", () => {
   render();
 });
 
+document.querySelector("#practice-role")?.addEventListener("change", (event) => {
+  state.practiceRole = event.target.value;
+  state.wizardStep = 0;
+  state.slide = 0;
+  if (state.practiceRole) {
+    if (!state.projects.some((project) => project.code === "PRACTICE")) {
+      state.projects = [...state.projects, { code: "PRACTICE", name: "Practice reviews", status: "Active" }];
+    }
+    state.project = "PRACTICE";
+    const visible = projectItems();
+    state.selected = visible[0]?.code || "";
+    setNotice(`Practice ${state.practiceRole.toUpperCase()} applies only to the practice project. Your administrator grant is unchanged.`);
+  } else {
+    state.project = "MDC";
+    const visible = projectItems();
+    state.selected = visible[0]?.code || "";
+    setNotice("Practice role is off. You are the administrator again. The MDC register is unchanged.");
+  }
+  render();
+});
+
+document.querySelector("#load-practice")?.addEventListener("click", async () => {
+  const response = await fetch("/api/workbench/practice", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    setNotice(body.message || "The practice records were not loaded.");
+    return;
+  }
+  const stored = await fetch("/api/workbench", { credentials: "include", cache: "no-store" });
+  if (stored.ok) {
+    const payload = await stored.json();
+    state.items = Array.isArray(payload.items) ? payload.items.map(normalizeReview) : state.items;
+  }
+  await loadCatalog();
+  state.project = "PRACTICE";
+  state.practiceRole = state.practiceRole || "nstt";
+  state.selected = "S-01";
+  state.view = "queue";
+  const created = body.created?.length ? `Added ${body.created.join(", ")}.` : "The practice records were already loaded.";
+  setNotice(`${created} Choose NSTT to finish S-01, CPI to review S-02, or Trade to review S-03. The MDC register is unchanged.`);
+  render();
+});
+
 document.querySelector("#add-record").addEventListener("click", async () => {
-  if (state.session?.role !== "nstt") {
+  if (actingRole() !== "nstt") {
     setNotice("Only the NSTT role can start an analysis record.");
     return;
   }
-  const item = normalizeReview({ code: nextCode(state.items), title: "New review", ownerRole: "nstt", reviewerRole: "cpi", projectId: state.project });
+  const practicing = practiceAllowed() && state.practiceRole === "nstt";
+  const item = normalizeReview({
+    code: practicing ? nextPracticeCode(state.items) : nextCode(state.items),
+    title: practicing ? "Sample review" : "New review",
+    ownerRole: "nstt",
+    reviewerRole: "cpi",
+    projectId: practicing ? "PRACTICE" : state.project,
+    supplier: practicing ? "Example Supplier LLC" : "",
+  });
   state.items = [...state.items, item];
   state.selected = item.code;
   state.view = "queue";

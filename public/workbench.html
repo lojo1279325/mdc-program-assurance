@@ -69,6 +69,7 @@
             </div>
             <div class="command-actions" aria-label="Commands">
               <button type="button" id="add-record" class="primary">New</button>
+              <button type="button" id="load-practice" class="ghost" hidden>Load practice records</button>
               <button type="button" id="load-method" class="ghost">Method checklist</button>
               <button type="button" id="client-toggle" class="ghost">Client view</button>
             </div>
@@ -81,6 +82,16 @@
                 <select id="project" aria-describedby="project-example"></select>
                 <span class="field-example" id="project-example">Example: MDC for the current register.</span>
                 <span class="field-tip" id="project-tip" role="tooltip">Choose the project whose records you want to see. A new project starts empty and does not move the current register.</span>
+              </div>
+              <div class="search field" id="practice-wrap" hidden>
+                <span class="field-label">Practice role</span>
+                <select id="practice-role" aria-describedby="practice-example">
+                  <option value="">Administrator</option>
+                  <option value="nstt">NSTT</option>
+                  <option value="cpi">CPI</option>
+                  <option value="trade">Trade</option>
+                </select>
+                <span class="field-example" id="practice-example">Development only. This does not change your administrator grant.</span>
               </div>
             </div>
           </div>

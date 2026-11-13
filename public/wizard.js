@@ -21,7 +21,7 @@ const REVIEW_STEPS = [
 ];
 
 const ADMIN_STEPS = [
-  { id: "role", title: "Confirm your role", body: "You grant access for this environment. You do not prepare or approve an analysis." },
+  { id: "role", title: "Confirm your role", body: "You grant access for this environment. You do not prepare or approve an analysis. In development, choose a practice role to walk through NSTT, CPI, or Trade on the practice project only. That choice does not change your administrator grant, and it cannot change the MDC register." },
   { id: "grant", title: "Grant a working role", body: "Grant Administrator, NSTT, CPI, or Trade to a different person on an allowed domain. A domain match is not a grant. This grant does not apply to production, and it does not replace your own access." },
   { id: "project", title: "Create a project only if a new review set is needed", body: "The current register stays on MDC. A new project starts empty. Do not move existing records by import." },
   { id: "sequence", title: "Read the analysis sequence", body: "The analysis sequence is Why, What, When, Where, Who, then How. NSTT prepares it. CPI reviews parts and suppliers. Trade reviews trade-sensitive conditions. A different person in the reviewer role approves." },
