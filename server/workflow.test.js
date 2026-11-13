@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deflateRawSync } from "node:zlib";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { actionList, applyImportRow, approvalBlock, methodChecklist, metrics, normalizeReview, scorecard } from "../public/rules.js";
 import { rowsFromWorkbook, workbookFromRows } from "./sheet.js";
 
@@ -94,6 +94,42 @@ test("the register workbook round trip keeps the review key and version", () => 
   assert.equal(rows[0].code, "P037");
   assert.equal(Number(rows[0].version), 2);
   assert.equal(rows[0].action, "Proceed with protections");
+});
+
+test("every exported workbook entry has a valid ZIP checksum", () => {
+  const file = workbookFromRows([{ code: "S-01", title: "Sample \u00e9quipment", version: 1 }]);
+  const checksums = new Map();
+  let offset = 0;
+  while (file.readUInt32LE(offset) === 0x04034b50) {
+    const size = file.readUInt32LE(offset + 18);
+    const nameLength = file.readUInt16LE(offset + 26);
+    const extraLength = file.readUInt16LE(offset + 28);
+    const name = file.subarray(offset + 30, offset + 30 + nameLength).toString();
+    const start = offset + 30 + nameLength + extraLength;
+    const bytes = inflateRawSync(file.subarray(start, start + size));
+    let checksum = 0xffffffff;
+    for (const byte of bytes) {
+      checksum ^= byte;
+      for (let bit = 0; bit < 8; bit += 1) checksum = checksum & 1 ? 0xedb88320 ^ (checksum >>> 1) : checksum >>> 1;
+    }
+    checksum = (checksum ^ 0xffffffff) >>> 0;
+    assert.equal(file.readUInt32LE(offset + 14), checksum, `Local checksum: ${name}`);
+    checksums.set(name, checksum);
+    offset = start + size;
+  }
+  assert.ok(checksums.size > 0);
+  let centralCount = 0;
+  while (file.readUInt32LE(offset) === 0x02014b50) {
+    const nameLength = file.readUInt16LE(offset + 28);
+    const extraLength = file.readUInt16LE(offset + 30);
+    const commentLength = file.readUInt16LE(offset + 32);
+    const name = file.subarray(offset + 46, offset + 46 + nameLength).toString();
+    assert.equal(file.readUInt32LE(offset + 16), checksums.get(name), `Central checksum: ${name}`);
+    centralCount += 1;
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  assert.equal(centralCount, checksums.size);
+  assert.equal(file.readUInt32LE(offset), 0x06054b50);
 });
 
 test("a workbook with reversed relationship order keeps the version column", () => {

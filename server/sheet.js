@@ -1,5 +1,18 @@
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 
+const CRC_TABLE = new Uint32Array(256);
+for (let index = 0; index < CRC_TABLE.length; index += 1) {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  CRC_TABLE[index] = value >>> 0;
+}
+
+function crc32(bytes) {
+  let value = 0xffffffff;
+  for (const byte of bytes) value = CRC_TABLE[(value ^ byte) & 0xff] ^ (value >>> 8);
+  return (value ^ 0xffffffff) >>> 0;
+}
+
 const HEADERS = [
   "Code",
   "Title",
@@ -213,11 +226,13 @@ function zip(files) {
   for (const [name, content] of Object.entries(files)) {
     const data = Buffer.from(content);
     const compressed = deflateRawSync(data);
+    const checksum = crc32(data);
     const nameBuffer = Buffer.from(name);
     const header = Buffer.alloc(30);
     header.writeUInt32LE(0x04034b50, 0);
     header.writeUInt16LE(20, 4);
     header.writeUInt16LE(8, 8);
+    header.writeUInt32LE(checksum, 14);
     header.writeUInt32LE(compressed.length, 18);
     header.writeUInt32LE(data.length, 22);
     header.writeUInt16LE(nameBuffer.length, 26);
@@ -227,6 +242,7 @@ function zip(files) {
     centralHeader.writeUInt16LE(20, 4);
     centralHeader.writeUInt16LE(20, 6);
     centralHeader.writeUInt16LE(8, 10);
+    centralHeader.writeUInt32LE(checksum, 16);
     centralHeader.writeUInt32LE(compressed.length, 20);
     centralHeader.writeUInt32LE(data.length, 24);
     centralHeader.writeUInt16LE(nameBuffer.length, 28);
