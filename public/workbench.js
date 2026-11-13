@@ -16,6 +16,8 @@ import {
   normalizeReview,
   scorecard,
 } from "./rules.js";
+import { BUILT_IN_PROJECT, filterProject } from "./boards.js";
+import { drawCompletion, drawLibrary, drawOwner, drawProjects, drawSources, drawUser, drawWorkflow } from "./views.js";
 
 const state = {
   items: [],
@@ -24,6 +26,11 @@ const state = {
   query: "",
   client: false,
   session: null,
+  project: "MDC",
+  projects: [BUILT_IN_PROJECT],
+  library: { vendors: [], parts: [] },
+  sourceStatus: { federalRegister: true, screeningList: false, sayari: false },
+  sourceResults: [],
   notice: "This is the development workspace. Production is unchanged. A granted role is required before a record is stored.",
 };
 
@@ -34,6 +41,13 @@ const titles = {
   outputs: "Outputs",
   duties: "Separation of duties",
   updates: "Import and versions",
+  workflow: "Workflow",
+  completion: "Completion",
+  mine: "My work",
+  owner: "Owner",
+  library: "Library",
+  sources: "Sources",
+  projects: "Projects",
 };
 
 const main = document.querySelector("#main");
@@ -57,16 +71,21 @@ function posture(action) {
   }[action] || "grey";
 }
 
+function projectItems() {
+  return filterProject(state.items, state.project);
+}
+
 function visibleItems() {
   const query = state.query.trim().toLowerCase();
-  return state.items.filter((item) => {
+  return projectItems().filter((item) => {
     if (!query) return true;
-    return `${item.code} ${item.title} ${item.layer} ${item.action}`.toLowerCase().includes(query);
+    return `${item.code} ${item.title} ${item.layer} ${item.action} ${item.supplier || ""}`.toLowerCase().includes(query);
   });
 }
 
 function selected() {
-  return state.items.find((item) => item.code === state.selected) || visibleItems()[0] || null;
+  const visible = visibleItems();
+  return visible.find((item) => item.code === state.selected) || visible[0] || null;
 }
 
 function setNotice(text) {
@@ -81,7 +100,22 @@ function render() {
     button.classList.toggle("on", button.dataset.view === state.view);
   });
   document.querySelector("#client-toggle").textContent = state.client ? "Internal view" : "Client view";
-  const draw = { queue: drawQueue, cards: drawCards, metrics: drawMetrics, outputs: drawOutputs, duties: drawDuties, updates: drawUpdates };
+  const draw = {
+    queue: drawQueue,
+    cards: drawCards,
+    metrics: () => drawMetrics(projectItems()),
+    outputs: () => drawOutputs(projectItems()),
+    duties: drawDuties,
+    updates: drawUpdates,
+    workflow: () => drawWorkflow(projectItems()),
+    completion: () => drawCompletion(projectItems()),
+    mine: () => drawUser(projectItems(), state.session, state.client),
+    owner: () => drawOwner(projectItems(), state.client),
+    library: () => drawLibrary(state.items, state.library, state.project, state.query, state.client),
+    sources: () => drawSources(state.sourceStatus, state.sourceResults, state.client),
+    projects: () => drawProjects(state.projects, state.project),
+  };
+  syncProjectSelect();
   main.innerHTML = draw[state.view]();
   bind();
 }
@@ -125,9 +159,9 @@ function drawCards() {
   </article>`).join("")}</div>`;
 }
 
-function drawMetrics() {
-  const count = metrics(state.items);
-  const card = scorecard(state.items);
+function drawMetrics(items = projectItems()) {
+  const count = metrics(items);
+  const card = scorecard(items);
   const max = Math.max(1, ...Object.values(count.byAction));
   return `<div class="metrics">
     ${metric(count.records, "Records")}
@@ -148,9 +182,9 @@ function metric(value, label) {
   return `<article class="metric"><strong>${value}</strong><span>${esc(label)}</span></article>`;
 }
 
-function drawOutputs() {
-  const card = scorecard(state.items);
-  const rows = state.client ? clientView(state.items) : state.items.map(normalizeReview);
+function drawOutputs(items = projectItems()) {
+  const card = scorecard(items);
+  const rows = state.client ? clientView(items) : items.map(normalizeReview);
   const headers = state.client
     ? ["Code", "Title", "Action", "Condition", "Lifecycle", "Confidence"]
     : ["Code", "Title", "Risk", "Confidence", "Action", "Status", "Lifecycle"];
@@ -158,7 +192,7 @@ function drawOutputs() {
   const cells = state.client
     ? (item) => [item.code, item.title, show(item.action), show(item.condition), show(item.lifecycle), item.confidence]
     : (item) => [item.code, item.title, item.risk, item.confidence, show(item.action), item.status, show(item.lifecycle)];
-  const allActions = actionList(state.items).filter((action) => !state.client || action.text.includes("should not proceed"));
+  const allActions = actionList(items).filter((action) => !state.client || action.text.includes("should not proceed"));
   const actions = allActions.slice(0, 12);
   return `<div class="pane sentences">
     <p class="label">${state.client ? "Client output" : "Internal scorecard"}</p>
@@ -166,7 +200,8 @@ function drawOutputs() {
     <p class="label">Action list</p>
     ${actions.length ? actions.map((action) => `<p>${esc(action.text)}</p>`).join("") : "<p>No open actions. Add a review to generate the list.</p>"}
     ${allActions.length > actions.length ? `<p class="quiet">${allActions.length - actions.length} more actions are in the exported register.</p>` : ""}
-    <div class="row-actions"><button type="button" id="download" class="primary">Download register</button></div>
+    <p class="quiet">This download follows the selected project. The workbook export on Updates covers the full register.</p>
+    <div class="row-actions"><button type="button" id="download" class="primary">Download selected project</button></div>
   </div>
   <div style="overflow:auto;margin-top:12px;">
     <table>
@@ -232,6 +267,10 @@ function form(item) {
       <label class="field">Confidence <select name="confidence">${options(CONFIDENCE, item.confidence)}</select></label>
       <label class="field">Action <select name="action"><option value="">Not set</option>${options(ACTIONS, item.action)}</select></label>
       <label class="field">Status <select name="status">${options(STATUSES, item.status)}</select></label>
+      <label class="field">Project <select name="projectId">${options(state.projects.map((project) => project.code), item.projectId || "MDC")}</select></label>
+      <label class="field">Vendor <input name="supplier" value="${esc(item.supplier || "")}" /></label>
+      <label class="field">Part code <input name="sourceItem" value="${esc(item.sourceItem || "")}" /></label>
+      <label class="field">Drawing <input name="drawing" value="${esc(item.drawing || "")}" /></label>
     </div>
     <label class="field">Condition <textarea name="condition">${esc(item.condition)}</textarea></label>
     <label class="field">Future policy and lifecycle <textarea name="lifecycle">${esc(item.lifecycle)}</textarea></label>
@@ -261,6 +300,10 @@ function readForm(formElement, item) {
     lifecycle: data.get("lifecycle"),
     evidence: data.get("evidence"),
     openFact: data.get("openFact"),
+    projectId: data.get("projectId"),
+    supplier: data.get("supplier"),
+    sourceItem: data.get("sourceItem"),
+    drawing: data.get("drawing"),
     tradeSensitive: data.get("tradeSensitive") === "on",
     preparedBy: item.preparedBy || state.session?.email || "",
   });
@@ -349,6 +392,31 @@ function bind() {
     button.addEventListener("click", () => restoreVersion(button.dataset.restore));
   });
   if (state.view === "updates") loadVersions();
+  const vendorForm = document.querySelector("#vendor-form");
+  if (vendorForm) vendorForm.addEventListener("submit", (event) => saveCatalog(event, vendorForm, "/api/library/vendors", "Vendor saved."));
+  const partForm = document.querySelector("#part-form");
+  if (partForm) partForm.addEventListener("submit", (event) => saveCatalog(event, partForm, "/api/library/parts", "Part saved."));
+  const projectForm = document.querySelector("#project-form");
+  if (projectForm) projectForm.addEventListener("submit", createProject);
+  const sourceForm = document.querySelector("#source-form");
+  if (sourceForm) sourceForm.addEventListener("submit", checkSources);
+  main.querySelectorAll("[data-project]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.project = button.dataset.project;
+      state.view = "queue";
+      const visible = visibleItems();
+      state.selected = visible[0]?.code || "";
+      setNotice(`Showing ${state.project}. A blank project id still belongs to MDC until a record is saved into another project.`);
+      render();
+    });
+  });
+  main.querySelectorAll("[data-open]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.selected = button.dataset.code;
+      state.view = button.dataset.open || "queue";
+      render();
+    });
+  });
 }
 
 async function downloadWorkbook() {
@@ -454,13 +522,13 @@ async function restoreVersion(version) {
 }
 
 function exportRegister() {
-  const rows = state.client ? clientView(state.items) : state.items.map(normalizeReview);
+  const rows = state.client ? clientView(projectItems()) : projectItems().map(normalizeReview);
   if (!rows.length) return;
   const headers = Object.keys(rows[0]);
   const csv = [headers.join(","), ...rows.map((row) => headers.map((key) => `"${String(row[key] ?? "").replaceAll('"', '""')}"`).join(","))].join("\n");
   const link = document.createElement("a");
   link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-  link.download = state.client ? "client-register.csv" : "decision-register.csv";
+  link.download = state.client ? `${state.project}-client-register.csv` : `${state.project}-decision-register.csv`;
   link.click();
   URL.revokeObjectURL(link.href);
 }
@@ -470,6 +538,22 @@ document.querySelectorAll(".nav").forEach((button) => {
     state.view = button.dataset.view;
     render();
   });
+});
+
+function syncProjectSelect() {
+  const select = document.querySelector("#project");
+  if (!select) return;
+  const codes = state.projects.map((project) => project.code);
+  if (!codes.includes(state.project)) state.project = "MDC";
+  select.innerHTML = state.projects.map((project) => `<option value="${esc(project.code)}" ${project.code === state.project ? "selected" : ""}>${esc(project.name)}</option>`).join("");
+}
+
+document.querySelector("#project").addEventListener("change", (event) => {
+  state.project = event.target.value;
+  const visible = visibleItems();
+  state.selected = visible[0]?.code || "";
+  setNotice(`Showing ${state.project}. Metrics, cards, and dashboards follow this project. The workbook export still covers the full register.`);
+  render();
 });
 
 document.querySelector("#search").addEventListener("input", (event) => {
@@ -486,7 +570,7 @@ document.querySelector("#client-toggle").addEventListener("click", () => {
 });
 
 document.querySelector("#add-record").addEventListener("click", async () => {
-  const item = normalizeReview({ code: nextCode(state.items), title: "New review", ownerRole: "nstt", reviewerRole: "cpi" });
+  const item = normalizeReview({ code: nextCode(state.items), title: "New review", ownerRole: "nstt", reviewerRole: "cpi", projectId: state.project });
   state.items = [...state.items, item];
   state.selected = item.code;
   state.view = "queue";
@@ -514,6 +598,74 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+async function postJson(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  return { ok: response.ok, payload };
+}
+
+async function saveCatalog(event, formElement, url, success) {
+  event.preventDefault();
+  const body = Object.fromEntries(new FormData(formElement).entries());
+  const result = await postJson(url, body);
+  if (!result.ok) {
+    setNotice(result.payload.message || "The library entry was not saved.");
+    return;
+  }
+  await loadCatalog();
+  setNotice(success);
+  render();
+}
+
+async function createProject(event) {
+  event.preventDefault();
+  const formElement = event.currentTarget;
+  const body = Object.fromEntries(new FormData(formElement).entries());
+  const result = await postJson("/api/projects", body);
+  if (!result.ok) {
+    setNotice(result.payload.message || "The project was not created.");
+    return;
+  }
+  await loadCatalog();
+  state.project = result.payload.code;
+  setNotice(`${result.payload.code} is ready. It starts empty. Move a record only by saving it into this project.`);
+  render();
+}
+
+async function checkSources(event) {
+  event.preventDefault();
+  const body = Object.fromEntries(new FormData(event.currentTarget).entries());
+  body.projectId = state.project;
+  setNotice("Checking public sources. A match is a source note. It does not set the action or the risk band.");
+  const result = await postJson("/api/sources/lookup", body);
+  if (!result.ok) {
+    setNotice(result.payload.message || "The source check did not finish.");
+    return;
+  }
+  state.sourceResults = result.payload.results || [];
+  setNotice("The source check is saved as a note. It does not change the review.");
+  render();
+}
+
+async function loadCatalog() {
+  const [projects, library, sources] = await Promise.all([
+    fetch("/api/projects", { credentials: "include", cache: "no-store" }),
+    fetch("/api/library", { credentials: "include", cache: "no-store" }),
+    fetch("/api/sources/status", { credentials: "include", cache: "no-store" }),
+  ]);
+  if (projects.ok) {
+    const body = await projects.json();
+    state.projects = body.projects?.length ? body.projects : [BUILT_IN_PROJECT];
+  }
+  if (library.ok) state.library = await library.json();
+  if (sources.ok) state.sourceStatus = await sources.json();
+}
+
 const sessionResponse = await fetch("/api/session", { credentials: "include", cache: "no-store" }).catch(() => null);
 if (sessionResponse?.ok) {
   state.session = await sessionResponse.json();
@@ -523,6 +675,7 @@ if (sessionResponse?.ok) {
     if (stored.ok) {
       const body = await stored.json();
       state.items = Array.isArray(body.items) ? body.items.map(normalizeReview) : [];
+      await loadCatalog();
       setNotice(state.session.database === "postgres"
         ? `Signed in as ${state.session.role}. Records are stored in the development database.`
         : `Signed in as ${state.session.role}. Records on this host do not survive a restart until a database is connected.`);
