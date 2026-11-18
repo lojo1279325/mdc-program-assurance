@@ -57,7 +57,8 @@ function recordDetail(record) {
     <summary>${esc(record.code)}: ${esc(record.title)}</summary>
     <dl>
       <div><dt>Supplier</dt><dd>${esc(record.supplier)}</dd></div>
-      <div><dt>Status</dt><dd>${esc(record.status)}${record.status === "Approved" ? "" : ". This record is not a purchasing approval."}</dd></div>
+      <div><dt>Status</dt><dd>${esc(record.status)}${record.reassessment ? `. ${esc(record.reassessment)} This record is held out of the current decision line.` : record.status === "Approved" ? "" : ". This record is not a purchasing approval."}</dd></div>
+      ${record.riskSummary && record.riskSummary.validation !== "Not started" ? `<div><dt>Rule-based assessment</dt><dd>Inherent ${esc(record.riskSummary.inherentRisk || "Not assessed")}. Residual ${esc(record.riskSummary.residualRisk || "Not assessed")}. Final ${esc(record.riskSummary.finalRisk || "Not validated")}. ${esc(record.riskSummary.validation)}. Policy ${esc(record.riskSummary.policyVersion)}.</dd></div>` : ""}
       <div><dt>Action</dt><dd>${esc(record.action)}</dd></div>
       <div><dt>Risk</dt><dd>${esc(record.risk)}</dd></div>
       <div><dt>Confidence</dt><dd class="presentation-confidence">${esc(record.confidence)}</dd></div>

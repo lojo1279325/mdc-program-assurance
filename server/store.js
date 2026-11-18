@@ -2,8 +2,9 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import pg from "pg";
 import { ENVIRONMENTS, ROLES, normalizeEmail } from "./policy.js";
+import { RISK_SCHEMA, riskMemory, riskFile, riskPostgres } from "./risk-store.js";
 
-const SCHEMA = `
+export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS access_grants (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL,
@@ -97,7 +98,8 @@ CREATE TABLE IF NOT EXISTS source_lookups (
   summary TEXT NOT NULL,
   payload TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS source_lookups_subject ON source_lookups (environment, subject_key, observed_at);`;
+CREATE INDEX IF NOT EXISTS source_lookups_subject ON source_lookups (environment, subject_key, observed_at);
+${RISK_SCHEMA}`;
 
 function nowIso() {
   return new Date().toISOString();
@@ -121,7 +123,7 @@ function mapGrant(row) {
   };
 }
 
-function createMemory() {
+export function createMemory() {
   const grants = [];
   const sessions = [];
   const items = [];
@@ -187,8 +189,9 @@ function createMemory() {
       items.push(row);
       return row;
     },
-    ...versionMemory(),
+    ...versionMemory(items),
     ...catalogMemory(),
+    ...riskMemory(),
   };
 }
 
@@ -268,6 +271,7 @@ function createFileStore() {
     },
     ...versionFile(read, write),
     ...catalogFile(read, write),
+    ...riskFile(read, write),
   };
 }
 
@@ -344,6 +348,7 @@ function createPostgres(connectionString) {
     },
     ...versionPostgres(pool, ensure),
     ...catalogPostgres(pool, ensure),
+    ...riskPostgres(pool, ensure),
   };
 }
 
@@ -362,10 +367,33 @@ function versionRow(row) {
   };
 }
 
-function versionMemory() {
+function reviewItem(input) {
+  return { code: input.code, environment: input.environment, kind: "review", status: input.status, note: input.snapshot };
+}
+
+function reviewVersion(input) {
+  return {
+    id: newId(), code: input.code, environment: input.environment, version: input.expectedVersion + 1,
+    saved_at: nowIso(), saved_by: input.savedBy, change_note: input.changeNote || "",
+    batch_id: input.batchId || null, snapshot: input.snapshot,
+  };
+}
+
+function versionMemory(items) {
   const versions = [];
   const batches = [];
   return {
+    async saveReview(input) {
+      const latest = versions.filter(row => row.code === input.code && row.environment === input.environment).reduce((max, row) => Math.max(max, row.version), 0);
+      if (latest !== input.expectedVersion) return null;
+      const row = reviewVersion(input);
+      const item = reviewItem(input);
+      const index = items.findIndex(row => row.code === input.code && row.environment === input.environment);
+      if (index < 0) items.push(item);
+      else items[index] = item;
+      versions.push(row);
+      return { ...item };
+    },
     async latestVersion(code, environment) {
       return versions.filter((row) => row.code === code && row.environment === environment).reduce((max, row) => Math.max(max, row.version), 0);
     },
@@ -400,6 +428,19 @@ function versionMemory() {
 
 function versionFile(read, write) {
   return {
+    async saveReview(input) {
+      const data = read();
+      data.versions ||= [];
+      const latest = data.versions.filter(row => row.code === input.code && row.environment === input.environment).reduce((max, row) => Math.max(max, row.version), 0);
+      if (latest !== input.expectedVersion) return null;
+      const item = reviewItem(input);
+      const index = data.items.findIndex(row => row.code === input.code && row.environment === input.environment);
+      if (index < 0) data.items.push(item);
+      else data.items[index] = item;
+      data.versions.push(reviewVersion(input));
+      write(data);
+      return item;
+    },
     async latestVersion(code, environment) {
       return (read().versions || []).filter((row) => row.code === code && row.environment === environment).reduce((max, row) => Math.max(max, row.version), 0);
     },
@@ -438,8 +479,28 @@ function versionFile(read, write) {
   };
 }
 
-function versionPostgres(pool, ensure) {
+export function versionPostgres(pool, ensure) {
   return {
+    async saveReview(input) {
+      await ensure();
+      const row = reviewVersion(input);
+      const item = reviewItem(input);
+      const result = await pool.query(`
+        WITH saved_version AS (
+          INSERT INTO record_versions (id, code, environment, version, saved_at, saved_by, change_note, batch_id, snapshot)
+          SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9
+          WHERE (SELECT COALESCE(MAX(version), 0) FROM record_versions WHERE code = $2 AND environment = $3) = $10
+          ON CONFLICT (code, environment, version) DO NOTHING
+          RETURNING code, environment
+        )
+        INSERT INTO items (code, kind, status, note, environment)
+        SELECT code, 'review', $11, $9, environment FROM saved_version
+        ON CONFLICT (code, environment) DO UPDATE SET
+          kind = EXCLUDED.kind, status = EXCLUDED.status, note = EXCLUDED.note
+        RETURNING *`,
+      [row.id, row.code, row.environment, row.version, row.saved_at, row.saved_by, row.change_note, row.batch_id, row.snapshot, input.expectedVersion, item.status]);
+      return result.rows[0] || null;
+    },
     async latestVersion(code, environment) {
       await ensure();
       const result = await pool.query("SELECT version FROM record_versions WHERE code = $1 AND environment = $2 ORDER BY version DESC LIMIT 1", [code, environment]);

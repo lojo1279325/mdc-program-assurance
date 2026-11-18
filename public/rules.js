@@ -1,3 +1,5 @@
+import { normalizeRiskAssessment, riskValidationBlock } from "./risk-model.js";
+
 export const ACTIONS = [
   "Proceed",
   "Proceed with protections",
@@ -7,7 +9,7 @@ export const ACTIONS = [
 
 export const CONFIDENCE = ["High", "Medium", "Low", "Pending"];
 
-export const RISK = ["Low", "Medium", "High", "Critical", "Not assessed"];
+export const RISK = ["Low", "Moderate", "Medium", "High", "Critical", "Not assessed"];
 
 export const STATUSES = ["Open", "In review", "Returned", "Approved"];
 
@@ -89,6 +91,13 @@ export function blankReview(input = {}) {
     projectId: cleanProjectId(input.projectId),
     changeNote: clip(input.changeNote, 300),
     updates: Array.isArray(input.updates) ? input.updates.slice(-12).map(cleanUpdate) : [],
+    ...(input.riskAssessment ? { riskAssessment: normalizeRiskAssessment(input.riskAssessment) } : {}),
+    ...(input.reassessment ? { reassessment: {
+      pendingCount: Number(input.reassessment.pendingCount) || 0,
+      materialCount: Number(input.reassessment.materialCount) || 0,
+      policyChanged: Boolean(input.reassessment.policyChanged),
+      triggerIds: Array.isArray(input.reassessment.triggerIds) ? input.reassessment.triggerIds.map(String) : [],
+    } } : {}),
   };
 }
 
@@ -129,6 +138,11 @@ export function approvalBlock(actor, record) {
   if (!ACTIONS.includes(item.action)) return "Approval requires an action.";
   if (!item.lifecycle) return "Approval requires a future policy and lifecycle note.";
   if (!item.evidence) return "A missing fact keeps confidence pending. Approval waits for that fact.";
+  if (item.riskAssessment) {
+    if (!item.riskAssessment.validation?.at) return "The assigned reviewer must validate the risk assessment before approval.";
+    const block = riskValidationBlock(item.riskAssessment, item.riskAssessment.validation, { practice: item.projectId === "PRACTICE" && actor.email.startsWith("practice-") });
+    if (block) return block;
+  }
   return "";
 }
 
@@ -274,7 +288,7 @@ export function applyImportRow(existing, row, actorEmail) {
       continue;
     }
     if (field === "risk") {
-      const risk = canonicalChoice(value, RISK, { l: "Low", m: "Medium", h: "High", moderate: "Medium" });
+      const risk = canonicalChoice(value, RISK, { l: "Low", m: "Medium", h: "High", moderate: "Moderate" });
       if (!risk) return { result: "rejected", code, message: "Risk is not a known band." };
       if (risk !== next.risk) {
         next.risk = risk;

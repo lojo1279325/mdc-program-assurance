@@ -45,6 +45,8 @@
             <button type="button" data-view="mine" class="nav" id="nav-mine">My work</button>
             <button type="button" data-view="analysis" class="nav" id="nav-analysis">Guided analysis</button>
             <button type="button" data-view="queue" class="nav" id="nav-queue">Review queue</button>
+            <button type="button" data-view="risk" class="nav" id="nav-risk">Risk assessment</button>
+            <button type="button" data-view="triggers" class="nav" id="nav-triggers">Change triggers</button>
             <button type="button" data-view="workflow" class="nav" id="nav-workflow">Progress</button>
             <p class="sitemap-group">Decision outputs</p>
             <button type="button" data-view="brief" class="nav" id="nav-brief">Decision brief</button>
@@ -62,6 +64,7 @@
               <button type="button" data-view="outputs" class="nav" id="nav-outputs">Register exports</button>
               <button type="button" data-view="duties" class="nav" id="nav-duties">Roles and practice</button>
               <button type="button" data-view="updates" class="nav" id="nav-updates">Import and versions</button>
+              <button type="button" data-view="riskrules" class="nav" id="nav-riskrules">Risk rules</button>
             </details>
           </nav>
         </aside>
@@ -118,6 +121,10 @@
         <p>This step has changes that are not saved. Keep editing to save them, or discard them and leave.</p>
         <div class="row-actions"><button value="stay" class="primary" autofocus>Keep editing</button><button value="discard" class="ghost">Discard changes</button></div>
       </form>
+    </dialog>
+    <dialog id="risk-history-dialog" aria-labelledby="risk-history-title">
+      <form method="dialog"><h2 id="risk-history-title">Saved risk history</h2><button autofocus>Close history</button></form>
+      <div id="risk-history-content"></div>
     </dialog>
     <script type="module" src="/workbench.js"></script>
   </body>

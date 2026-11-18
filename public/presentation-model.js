@@ -62,10 +62,11 @@ export function wrapText(text, box) {
 
 function selected(records, category) {
   const matches = records.filter((record) => CATEGORIES[category].pattern.test(record.title));
-  return matches.sort((a, b) => Number(b.status === "Approved") - Number(a.status === "Approved") || a.title.length - b.title.length || a.code.localeCompare(b.code))[0] || null;
+  return matches.sort((a, b) => Number(b.decisionEligible ?? (b.status === "Approved")) - Number(a.decisionEligible ?? (a.status === "Approved")) || a.title.length - b.title.length || a.code.localeCompare(b.code))[0] || null;
 }
 
 function actionStyle(record) {
+  if (record?.reassessment) return { label: "REASSESS", color: GREY };
   return ACTION_STYLE[record?.action] || { label: "NOT SET", color: GREY };
 }
 
@@ -99,6 +100,7 @@ function briefLifecycle(record, limit = 86) {
 
 function stateText(record) {
   if (!record) return "No matching record.\nAssessment is pending.";
+  if (record.reassessment) return `Reassessment required.\nConfidence: ${record.confidence || "Pending"}.\nPrior decision is held.`;
   return `${record.status === "Approved" ? "Approved record." : "Not approved."}\nConfidence: ${record.confidence || "Pending"}.\n${record.action ? `${actionStyle(record).label} action${record.status === "Approved" ? "." : ": draft."}` : "Action is not set."}`;
 }
 
@@ -115,6 +117,8 @@ function recordDetails(record) {
     confidence: record.confidence || "Pending",
     condition: record.condition || "No condition is recorded.",
     lifecycle: record.lifecycle || "No Future Policy/Lifecycle note is recorded.",
+    reassessment: record.reassessment || "",
+    riskSummary: record.riskSummary || null,
   };
 }
 
@@ -191,7 +195,7 @@ export function executiveSlides(brief = {}) {
             : approved < total ? "Keep unapproved records outside the decision"
               : "Proceed with the approved scope";
   addSlide(slides, brief, 1, firstTitle,
-    `${approved} of ${total} records are approved. Purchasing decisions use approved records only.`, {
+    `${approved} of ${total} records have current eligible approvals. Reassessment holds are excluded.`, {
       "8": `GREEN | ${actions[ACTIONS[0]] || 0} APPROVED`,
       "9": "Proceed.",
       "18": "Use the scope and conditions in the approved record.",
@@ -219,7 +223,7 @@ export function executiveSlides(brief = {}) {
     supplierValues[name] = record?.supplier && record.supplier.length <= 36 ? record.supplier : record ? `Supplier in details | ${record.code}` : "No supplier record";
     supplierValues[product] = `${picks[key] ? CATEGORIES[key].title.replace("\n", " ") : record?.title || CATEGORIES[key].title}${record ? ` | ${record.code}` : ""}`;
     supplierValues[badge] = actionStyle(record).label;
-    supplierValues[condition] = `${record ? record.status === "Approved" ? "Approved. " : "Not approved. " : ""}${briefCondition(record, 88)}`;
+    supplierValues[condition] = `${record ? record.reassessment ? "Reassessment required. " : record.status === "Approved" ? "Approved. " : "Not approved. " : ""}${briefCondition(record, 88)}`;
     supplierOverrides[background] = stripe(actionStyle(record).color);
     supplierOverrides[badge] = { color: NAVY };
   });
@@ -338,6 +342,11 @@ export function slideNotes(slide) {
       `Supplier: ${record.supplier}`,
       [record.sourceItem && `Source item: ${record.sourceItem}`, record.drawing && `Drawing: ${record.drawing}`].filter(Boolean).join(". "),
       `Status: ${record.status}. Action: ${record.action}. Risk: ${record.risk}. Confidence: ${record.confidence}.`,
+      ...(record.riskSummary?.validation !== "Not started" && record.riskSummary ? [
+        `Rule-based assessment: inherent ${record.riskSummary.inherentRisk || "Not assessed"}; residual ${record.riskSummary.residualRisk || "Not assessed"}; final ${record.riskSummary.finalRisk || "Not validated"}. ${record.riskSummary.validation}. Policy ${record.riskSummary.policyVersion}.`,
+        `Risk drivers: ${record.riskSummary.drivers || "None recorded"}. Information requests: ${record.riskSummary.followUp || "None recorded"}.`,
+      ] : []),
+      ...(record.reassessment ? [`Current decision hold: ${record.reassessment}`] : []),
       `Condition: ${record.condition}`,
       `Future Policy/Lifecycle: ${record.lifecycle}`,
     );

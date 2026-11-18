@@ -80,6 +80,9 @@ export function drawRecordPath(item, actor) {
 
 export function drawQuickGuide({ view, role, projectName, practice }) {
   const guides = {
+    risk: ["Explain the risk assessment", "Complete the relevant rule facts and dated evidence. Save, send for different-person review, then validate the final risk and action. Draft policies cannot authorize real decisions.", "riskrules", "Review risk rules"],
+    triggers: ["Review a changed condition", "Log an event for a record or a vendor in the selected project. The assigned reviewer determines materiality. Material changes need a targeted reassessment and a documented disposition.", "risk", "Open risk assessment"],
+    riskrules: ["Configure client risk appetite", "A designated administrator records and approves the qualitative mapping. Saving a draft preserves the active policy. A new approved version requires existing risk assessments to be revalidated.", "risk", "Open risk assessment"],
     home: ["Start with the next action", "Read your project and role, then use the main button on Start here. My work shows the records waiting on your role.", "mine", "Open my work"],
     mine: ["Find work assigned to you", "Open an assigned record to continue its analysis or review. Approved records are read-only.", "analysis", "Open guided analysis"],
     analysis: role === "administrator"

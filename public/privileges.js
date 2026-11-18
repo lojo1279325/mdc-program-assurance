@@ -1,5 +1,6 @@
 import { methodChecklist, normalizeReview } from "./rules.js";
 import { approvalBlock } from "./rules.js";
+import { assessmentInputs } from "./risk-model.js";
 
 export const ROLE_LABEL = {
   administrator: "Administrator",
@@ -28,9 +29,11 @@ const PREPARE_FIELDS = [
   "sourceCategory",
   "sourceStatus",
   "confidenceScore",
+  "riskAssessment",
 ];
 
 function same(left, right, field) {
+  if (field === "riskAssessment") return JSON.stringify(assessmentInputs(left)) === JSON.stringify(assessmentInputs(right));
   if (field === "tradeSensitive") return Boolean(left) === Boolean(right);
   return String(left ?? "") === String(right ?? "");
 }
@@ -135,7 +138,12 @@ export function privilegeDecision(actor, existing, proposed) {
   if (!prior && !isMethodTemplate(next) && !["cpi", "trade"].includes(next.reviewerRole)) return "Choose CPI or Trade as the reviewer.";
   if (!prior && next.status !== "Open") return "A new record starts as Open. Send it to review after the analysis is complete.";
 
-  const analysisChanged = prior ? changed(prior, next, PREPARE_FIELDS).length > 0 : true;
+  const validation = next.riskAssessment?.validation;
+  const reviewingRisk = prior?.status === "In review" && prior.riskAssessment && validation?.at &&
+    validation.by === actor.email && role === prior.reviewerRole && actor.email !== prior.preparedBy &&
+    next.risk === validation.finalRisk && next.confidence === validation.confidence && next.action === validation.action;
+  const fields = reviewingRisk ? PREPARE_FIELDS.filter(field => !["risk", "confidence", "action"].includes(field)) : PREPARE_FIELDS;
+  const analysisChanged = prior ? changed(prior, next, fields).length > 0 : true;
   if (next.status === "Approved") {
     if (!prior || prior.status === "Approved") return "An approved record is locked. The assigned reviewer can return it with a note.";
     if (prior.status !== "In review") return "Send the record to review before a different role approves it.";
@@ -152,7 +160,7 @@ export function privilegeDecision(actor, existing, proposed) {
     if (role === "trade" && prior.tradeSensitive) return "";
     return "Only the assigned reviewer can add a review note while the record is in review.";
   }
-  if (next.status === "Returned") {
+  if (next.status === "Returned" && prior?.status !== "Returned") {
     if (!prior || prior.status !== "In review") return "Only a record in review can be returned.";
     if (role !== prior.reviewerRole) return "Only the assigned reviewer can return this record.";
     if (analysisChanged) return "A return keeps the analysis as prepared. Add a review note instead of changing the record.";
