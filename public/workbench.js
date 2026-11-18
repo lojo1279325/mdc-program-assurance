@@ -51,6 +51,9 @@ const state = {
   wizardStep: 0,
   practiceRole: "",
   grants: [],
+  projectRoleData: null,
+  roleProject: "",
+  roleSaving: "",
   statusFilter: "all",
   dirty: false,
   saving: false,
@@ -221,6 +224,11 @@ function render() {
       practice: Boolean(state.practiceRole),
       canPractice: practiceAllowed(),
       signedIn: state.session?.state === "granted",
+      roleSource: state.practiceRole ? "practice" : roleSource(),
+      defaultRole: state.session?.role || "",
+      roster: state.session?.administrator ? state.projectRoleData : null,
+      rosterProject: state.roleProject,
+      rosterSaving: state.roleSaving,
     }),
     queue: drawQueue,
     cards: drawCards,
@@ -270,7 +278,7 @@ function render() {
     : state.session?.state === "granted" ? `${roleName} · Signed in` : "Sign-in required";
   const profile = document.querySelector(".profile");
   profile.querySelector(".profile-name").textContent = state.session?.state === "granted"
-    ? `${ROLE_LABEL[state.session.role] || state.session.role} · Signed in`
+    ? `${ROLE_LABEL[actingRole()] || actingRole()} · Signed in`
     : "Sign in";
   profile.setAttribute("aria-label", state.session?.state === "granted" ? "Open account and sign-in page" : "Sign-in page");
   main.dataset.view = state.view;
@@ -414,12 +422,12 @@ function drawUpdates() {
     <p>Export the register, edit the Register sheet, and import it back. A blank cell keeps the current value. Type CLEAR to remove a text value.</p>
     <p>Each imported change becomes the next version. A stale version is rejected, so export again before you retry that row.</p>
     <p>Import cannot approve a record. Only the NSTT role can import register updates, and only for records it prepares. A different person in the assigned reviewer role uses Approve.</p>
-    ${state.session?.role === "nstt" ? "" : `<p>Your role cannot import the register. Ask NSTT to make the update, or use Analysis for the work your role is allowed to do.</p>`}
+    ${anyNsttRole() ? "" : `<p>Your role cannot import the register. Ask NSTT to make the update, or use Analysis for the work your role is allowed to do.</p>`}
     <p>Hold or Restructure is a source category from the October workbook. It is not one of the four actions. Set the action before approval. A missing fact keeps confidence pending and does not change the risk band.</p>
     <p>${state.items.length} records are loaded. ${waiting} still need an action. ${inReview} are in review.</p>
     <div class="row-actions">
       <button type="button" id="export-workbook" class="primary">Export workbook</button>
-      ${state.session?.role === "nstt" ? `<label class="field tone-note">Choose workbook <input id="import-file" type="file" accept=".xlsx" title="Choose the workbook you exported. Edit the Register sheet, then import it." /><span class="field-example">Example: the workbook you exported, with edits on the Register sheet.</span></label><button type="button" id="import-workbook">Import workbook</button>` : ""}
+      ${anyNsttRole() ? `<label class="field tone-note">Choose workbook <input id="import-file" type="file" accept=".xlsx" title="Choose the workbook you exported. Edit the Register sheet, then import it." /><span class="field-example">Example: the workbook you exported, with edits on the Register sheet.</span></label><button type="button" id="import-workbook">Import workbook</button>` : ""}
     </div>
     <p class="quiet" id="import-result">${current ? `${current.code} is selected at version ${current.version || 0}.` : "Select a record to see its versions."}</p>
   </div>
@@ -430,8 +438,25 @@ function practiceAllowed() {
   return state.session?.environment === "development" && state.session?.role === "administrator" && Boolean(state.session?.administrator);
 }
 
+// The working role in one project. An administrator stays an administrator.
+// Everyone else uses a project assignment when one exists, then the default.
+function projectRole(project = state.project) {
+  const role = state.session?.role || "";
+  if (!role || role === "administrator") return role;
+  return state.session?.projectRoles?.[project] || role;
+}
+
+function roleSource(project = state.project) {
+  const role = state.session?.role || "";
+  return role && role !== "administrator" && state.session?.projectRoles?.[project] ? "project" : "default";
+}
+
 function actingRole() {
-  return practiceAllowed() && state.practiceRole ? state.practiceRole : (state.session?.role || "");
+  return practiceAllowed() && state.practiceRole ? state.practiceRole : projectRole();
+}
+
+function anyNsttRole() {
+  return state.session?.role === "nstt" || Object.values(state.session?.projectRoles || {}).includes("nstt");
 }
 
 function actingEmail() {
@@ -734,6 +759,14 @@ function bind() {
   if (wizardForm) wizardForm.addEventListener("submit", (event) => saveWizardStep(event, wizardForm));
   const grantForm = document.querySelector("#grant-form");
   if (grantForm) grantForm.addEventListener("submit", grantRole);
+  const rosterProject = document.querySelector("#roster-project");
+  if (rosterProject) rosterProject.addEventListener("change", () => {
+    state.roleProject = rosterProject.value;
+    render();
+  });
+  main.querySelectorAll("select[data-assign-email]").forEach((select) => {
+    select.addEventListener("change", () => assignProjectRole(select.dataset.assignProject, select.dataset.assignEmail, select.value));
+  });
   main.querySelectorAll("[data-open]").forEach((button) => {
     button.addEventListener("click", () => {
       goTo(button.dataset.open || "queue", { code: button.dataset.code });
@@ -979,7 +1012,7 @@ async function loadVersions() {
   const body = await response.json();
   const versions = body.versions || [];
   target.innerHTML = versions.length
-    ? `<p class="label">Versions for ${esc(current.code)}</p>${versions.map((version) => `<p>Version ${esc(version.version)}. ${esc(version.changeNote || "Saved")}</p>${state.session?.role === current.ownerRole && current.status !== "Approved" ? `<button type="button" data-restore="${esc(version.version)}">Restore as a new version</button>` : ""}`).join("")}`
+    ? `<p class="label">Versions for ${esc(current.code)}</p>${versions.map((version) => `<p>Version ${esc(version.version)}. ${esc(version.changeNote || "Saved")}</p>${projectRole(current.projectId || "MDC") === current.ownerRole && current.status !== "Approved" ? `<button type="button" data-restore="${esc(version.version)}">Restore as a new version</button>` : ""}`).join("")}`
     : `<p>No saved versions yet for ${esc(current.code)}.</p>`;
   target.querySelectorAll("[data-restore]").forEach((button) => {
     button.addEventListener("click", () => restoreVersion(button.dataset.restore));
@@ -1082,7 +1115,7 @@ function syncPracticeBar() {
 
 function syncRoleControls() {
   const prepare = actingRole() === "nstt";
-  const methodPrepare = state.session?.role === "nstt";
+  const methodPrepare = projectRole() === "nstt";
   const add = document.querySelector("#add-record");
   const method = document.querySelector("#load-method");
   if (add) {
@@ -1226,7 +1259,38 @@ async function grantRole(event) {
     return;
   }
   await loadGrants();
+  await loadProjectRoles();
   setNotice("The role is granted for this environment only. Production is unchanged.");
+  render();
+}
+
+async function loadProjectRoles() {
+  if (!state.session?.administrator || state.session?.role !== "administrator") return;
+  const response = await fetch("/api/access/project-roles", { credentials: "include", cache: "no-store" }).catch(() => null);
+  if (!response?.ok) {
+    state.projectRoleData = { error: "Project roles could not be loaded. Reload the page to retry." };
+    return;
+  }
+  state.projectRoleData = await response.json();
+  const codes = state.projectRoleData.projects?.map((project) => project.code) || [];
+  if (!codes.includes(state.roleProject)) state.roleProject = codes.includes(state.project) ? state.project : codes[0] || "";
+}
+
+async function assignProjectRole(projectId, email, role) {
+  const roster = state.projectRoleData?.rosters?.[projectId];
+  if (!roster || state.roleSaving) return;
+  state.roleSaving = email;
+  render();
+  const result = await postJson("/api/access/project-roles", { projectId, email, role, version: roster.version });
+  state.roleSaving = "";
+  if (result.ok) {
+    state.projectRoleData.rosters[projectId] = result.payload.roster;
+    const label = role ? ROLE_LABEL[role] || role : "their default role";
+    setNotice(`${email} now works as ${label} in ${projectId}. The change applies the next time they load the workbench.`);
+  } else {
+    setNotice(result.payload.message || "The role could not be saved. Refresh and try again.");
+    await loadProjectRoles();
+  }
   render();
 }
 
@@ -1349,7 +1413,7 @@ document.querySelector("#load-practice")?.addEventListener("click", () => leaveF
 document.querySelector("#add-record").addEventListener("click", () => leaveForm(startAnalysis));
 
 document.querySelector("#load-method").addEventListener("click", () => leaveForm(async () => {
-  if (state.session?.role !== "nstt") {
+  if (projectRole() !== "nstt") {
     setNotice("Only the NSTT role can start the method checklist.");
     return;
   }
@@ -1505,6 +1569,7 @@ if (sessionResponse?.ok) {
       const body = await stored.json();
       state.items = Array.isArray(body.items) ? body.items.map(normalizeReview) : [];
       await loadCatalog();
+      await loadProjectRoles();
       setNotice(state.session.database === "postgres"
         ? `Signed in as ${state.session.role}. Records are stored in the development database.`
         : `Signed in as ${state.session.role}. Records on this host do not survive a restart until a database is connected.`);
