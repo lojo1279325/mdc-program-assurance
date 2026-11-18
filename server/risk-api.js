@@ -104,7 +104,8 @@ export async function prepareRiskChange({ store, environment, actor, existing, r
 
 export function registerRiskRoutes(app, { store, grantedActor, parseReview }) {
   async function context(req, res, projectId) {
-    const actor = await grantedActor(req);
+    // The caller resolves the working role for this project.
+    const actor = await grantedActor(req, projectId);
     if (actor.error) { res.status(actor.error).json({ message: actor.message }); return null; }
     const requestedRole = practiceRoleFrom(req.get("x-practice-role"));
     const acting = requestedRole ? practiceActor({

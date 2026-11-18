@@ -522,6 +522,25 @@ button:active:not(:disabled), summary:active { background-color: var(--blue-soft
 .progress-stops strong { font-size: 28px; font-variant-numeric: tabular-nums; }
 .progress-stops small { font-size: var(--text-xs); color: var(--muted); line-height: 1.4; }
 .start-work-list { display: grid; margin-top: var(--space-3); }
+.start-focus, .start-actions, .start-roster { grid-column: 1 / -1; padding: var(--space-5); box-shadow: none; }
+.start-actions .row-actions { margin-top: var(--space-3); flex-wrap: wrap; }
+.role-source { font-size: var(--text-xs); }
+.focus-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-2); margin-top: var(--space-4); }
+.focus-tiles button { display: grid; text-align: left; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--line); border-radius: 4px; background: var(--bg); min-width: 0; }
+.focus-tiles button:hover { border-color: var(--blue); background: var(--blue-soft); }
+.focus-tiles span { font-weight: 700; overflow-wrap: anywhere; }
+.focus-tiles strong { font-size: 28px; font-variant-numeric: tabular-nums; }
+.focus-tiles small { font-size: var(--text-xs); color: var(--muted); line-height: 1.4; }
+.roster { display: grid; gap: var(--space-3); margin-top: var(--space-3); }
+.roster-project { display: grid; gap: var(--space-1); font-weight: 700; max-width: 420px; }
+.roster-project select, .roster-role select { min-height: 36px; width: 100%; }
+.roster-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.roster-list li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 240px); gap: var(--space-3); align-items: center; padding: var(--space-3) 0; border-bottom: 1px solid var(--table-line); }
+.roster-person { display: grid; gap: 2px; min-width: 0; }
+.roster-person strong { overflow-wrap: anywhere; }
+.roster-person small { color: var(--muted); font-size: var(--text-xs); }
+.roster-role { display: grid; gap: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .start-work-list button { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); padding: var(--space-3) 0; border: 0; border-bottom: 1px solid var(--table-line); background: #fff; text-align: left; line-height: 1.5; }
 .start-work-list button:hover { color: var(--blue-text); }
 .sign-in-action { display: inline-block; text-decoration: none; margin-top: var(--space-3); }
@@ -688,6 +707,9 @@ button:active:not(:disabled), summary:active { background-color: var(--blue-soft
   main { flex: none; overflow: visible; padding: var(--space-4); }
   .start-layout { grid-template-columns: 1fr; gap: var(--space-3); }
   .start-next, .start-role, .start-progress, .start-work { padding: var(--space-4); }
+  .start-focus, .start-actions, .start-roster { padding: var(--space-4); }
+  .focus-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .roster-list li { grid-template-columns: 1fr; gap: var(--space-2); }
   .progress-stops { gap: var(--space-1); }
   .progress-stops button { padding: var(--space-2); }
   .queue-toolbar { align-items: flex-start; flex-direction: column; }
