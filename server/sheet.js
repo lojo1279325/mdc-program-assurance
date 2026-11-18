@@ -1,4 +1,5 @@
 import { deflateRawSync, inflateRawSync } from "node:zlib";
+import { riskSummary, decisionEligible } from "../public/risk-model.js";
 
 const CRC_TABLE = new Uint32Array(256);
 for (let index = 0; index < CRC_TABLE.length; index += 1) {
@@ -37,6 +38,15 @@ const HEADERS = [
   "Source status",
   "Version",
   "Change note",
+  "Inherent risk",
+  "Residual risk",
+  "Final risk",
+  "Risk validation",
+  "Risk policy version",
+  "Risk drivers",
+  "Risk information requests",
+  "Reassessment status",
+  "Decision eligibility",
 ];
 
 const FIELD_BY_HEADER = {
@@ -264,11 +274,20 @@ function zip(files) {
 export function workbookFromRows(records) {
   const register = [
     HEADERS,
-    ...records.map((record) => HEADERS.map((header) => {
+    ...records.map((record) => {
+      const summary = riskSummary(record);
+      const extra = {
+        "Inherent risk": summary.inherentRisk, "Residual risk": summary.residualRisk, "Final risk": summary.finalRisk,
+        "Risk validation": summary.validation, "Risk policy version": summary.policyVersion, "Risk drivers": summary.drivers,
+        "Risk information requests": summary.followUp, "Reassessment status": summary.reassessment,
+        "Decision eligibility": decisionEligible(record) ? "Eligible" : "Not eligible",
+      };
+      return HEADERS.map((header) => {
       const field = FIELD_BY_HEADER[header];
-      const value = record[field];
+      const value = field ? record[field] : extra[header];
       return header === "Version" ? Number(value || 0) : value ?? "";
-    })),
+      });
+    }),
   ];
   const instructions = [
     ["MDC Program Assurance Workbench"],
@@ -278,6 +297,7 @@ export function workbookFromRows(records) {
     ["Import cannot approve a record. A different role approves after review."],
     ["Hold or Restructure is a source category. It is not one of the four actions."],
     ["A missing fact keeps confidence pending. It does not change the risk band."],
+    ["The risk columns are read-only summaries. Risk evidence, validation, policies, and change events are maintained in the workbench."],
     ["Allowed actions", "Proceed", "Proceed with protections", "Proceed with active mitigation", "Do not proceed absent resolution"],
   ];
   const files = {

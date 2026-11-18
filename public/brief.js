@@ -1,5 +1,6 @@
 import { ACTIONS, normalizeReview } from "./rules.js";
 import { vendorKey } from "./boards.js";
+import { decisionEligible, riskDecisionBlock, riskSummary } from "./risk-model.js";
 
 const RANK = { Pending: 0, Low: 1, Medium: 2, High: 3 };
 
@@ -46,6 +47,8 @@ export function vendorMap(items) {
       risk: item.risk,
       lifecycle: item.lifecycle || "",
       condition: item.condition || "",
+      decisionEligible: decisionEligible(item),
+      riskAssessment: riskSummary(item),
     };
     const name = namedVendor(item.supplier);
     if (!name) {
@@ -61,7 +64,7 @@ export function vendorMap(items) {
   const vendors = [...groups.values()].map((group) => {
     group.parts.sort((left, right) => left.code.localeCompare(right.code));
     group.accuracy = weakest(group.parts.map((part) => part.confidence));
-    group.approved = group.parts.filter((part) => part.status === "Approved").length;
+    group.approved = group.parts.filter((part) => part.decisionEligible).length;
     group.open = group.parts.length - group.approved;
     return group;
   }).sort((left, right) => right.parts.length - left.parts.length || left.name.localeCompare(right.name));
@@ -78,7 +81,7 @@ function actionCounts(items) {
 
 function headlineFor(approved, total) {
   if (!total) return "This project has no review records. The brief will update when a record is saved.";
-  if (!approved.length) return "This project is not ready for an executive decision. No record is approved.";
+  if (!approved.length) return "This project is not ready for an executive decision. No current approval is eligible.";
   const actions = new Set(approved.map((item) => item.action));
   if (actions.has("Do not proceed absent resolution")) return "Do not treat this project as clear to proceed. An approved record still requires resolution.";
   if (actions.has("Proceed with active mitigation")) return "Approved records support a decision only where active mitigation is already recorded.";
@@ -108,7 +111,8 @@ function recordRow(item) {
 export function decisionBrief(items, options = {}) {
   const reviews = items.map(normalizeReview);
   const map = vendorMap(items);
-  const approved = reviews.filter((item) => item.status === "Approved");
+  const approved = reviews.filter(decisionEligible);
+  const reassessment = reviews.filter(item => riskDecisionBlock(item));
   const ready = reviews.filter((item) => ACTIONS.includes(item.action) && item.evidence && item.lifecycle && item.status !== "Approved");
   const missingAction = reviews.filter((item) => !ACTIONS.includes(item.action));
   const missingEvidence = reviews.filter((item) => !item.evidence);
@@ -119,20 +123,20 @@ export function decisionBrief(items, options = {}) {
   const generatedOn = options.generatedOn || "";
   const headline = headlineFor(approved, reviews.length);
   const openRows = reviews
-    .filter((item) => item.status !== "Approved")
+    .filter((item) => !decisionEligible(item))
     .slice(0, 12)
     .map((item) => ({
       code: item.code,
       title: item.title || "Untitled review",
       action: item.action || "",
       confidence: item.confidence,
-      text: !ACTIONS.includes(item.action)
+      text: riskDecisionBlock(item) || (!ACTIONS.includes(item.action)
         ? "This record still needs one of the four actions."
         : !item.evidence
           ? "A fact is missing. Confidence stays pending. The risk band does not change."
           : !item.lifecycle
             ? "This record still needs a future policy and lifecycle note."
-            : "This record is not approved, so it is not part of the decision line.",
+            : "This record is not approved, so it is not part of the decision line."),
     }));
   const conditionPages = chunk(approved.map(recordRow), 2);
   const vendorRows = map.vendors.slice(0, 6).map((vendor) => ({
@@ -151,7 +155,7 @@ export function decisionBrief(items, options = {}) {
         headline,
         "This brief reads the current register for the selected project. It changes when a record is saved or approved.",
         "It does not repeat a static recommendation from an earlier deck, and it is not a legal conclusion.",
-        "An executive decision uses approved records only.",
+        "An executive decision uses current approvals without unresolved material changes or policy revalidation holds.",
       ],
       rows: [],
     },
@@ -179,7 +183,7 @@ export function decisionBrief(items, options = {}) {
         `${counts["Proceed with protections"]} may proceed with documented protections.`,
         `${counts["Proceed with active mitigation"]} may proceed only with active mitigation.`,
         `${counts["Do not proceed absent resolution"]} should not proceed until the open fact is resolved.`,
-        "A record that is not approved stays off this line, even when its action is already set.",
+        `${reassessment.length} records require risk reassessment or validation and remain off this line.`,
       ],
       rows: [],
     },
@@ -244,6 +248,7 @@ export function decisionBrief(items, options = {}) {
     missingEvidence: missingEvidence.length,
     missingLifecycle: missingLifecycle.length,
     pending: pending.length,
+    reassessment: reassessment.length,
     actions: counts,
     presentationRecords: reviews.map((item) => ({
       code: item.code,
@@ -257,6 +262,9 @@ export function decisionBrief(items, options = {}) {
       confidence: item.confidence,
       condition: item.condition,
       lifecycle: item.lifecycle,
+      decisionEligible: decisionEligible(item),
+      reassessment: riskDecisionBlock(item),
+      riskSummary: riskSummary(item),
     })),
     slides,
     vendors: map.vendors,
@@ -265,19 +273,20 @@ export function decisionBrief(items, options = {}) {
 }
 
 function csvCell(value) {
-  return `"${String(value ?? "").replaceAll("\"", "\"\"")}"`;
+  const text = String(value ?? "");
+  return `"${(/^[\s]*[=+\-@\t\r]/.test(text) ? `'${text}` : text).replaceAll("\"", "\"\"")}"`;
 }
 
 export function vendorMapCsv(map) {
-  const headers = ["Vendor", "Part code", "Part", "Drawing", "Action", "Status", "Accuracy confidence", "Lifecycle", "Condition"];
+  const headers = ["Vendor", "Part code", "Part", "Drawing", "Action", "Status", "Accuracy confidence", "Lifecycle", "Condition", "Decision eligibility", "Inherent risk", "Residual risk", "Final risk", "Validation", "Reassessment"];
   const rows = [];
   for (const vendor of map.vendors || []) {
     for (const part of vendor.parts) {
-      rows.push([vendor.name, part.code, part.title, part.drawing, part.action || "Not set", part.status, part.confidence, part.lifecycle, part.condition]);
+      rows.push([vendor.name, part.code, part.title, part.drawing, part.action || "Not set", part.status, part.confidence, part.lifecycle, part.condition, part.decisionEligible ? "Eligible" : "Not eligible", part.riskAssessment?.inherentRisk, part.riskAssessment?.residualRisk, part.riskAssessment?.finalRisk, part.riskAssessment?.validation, part.riskAssessment?.reassessment]);
     }
   }
   for (const part of map.unnamed || []) {
-    rows.push(["No named vendor", part.code, part.title, part.drawing, part.action || "Not set", part.status, "Pending", part.lifecycle, part.condition]);
+    rows.push(["No named vendor", part.code, part.title, part.drawing, part.action || "Not set", part.status, "Pending", part.lifecycle, part.condition, part.decisionEligible ? "Eligible" : "Not eligible", part.riskAssessment?.inherentRisk, part.riskAssessment?.residualRisk, part.riskAssessment?.finalRisk, part.riskAssessment?.validation, part.riskAssessment?.reassessment]);
   }
   return [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
 }

@@ -14,8 +14,9 @@ import { BUILT_IN_PROJECT, validNewProjectCode, vendorKey } from "../public/boar
 import { lookupSources, sourceStatus } from "./sources.js";
 import { PRACTICE_PROJECT, practiceActor, practiceRoleFrom, practiceSeedPlan } from "./practice.js";
 import { rowsFromWorkbook, workbookFromRows } from "./sheet.js";
+import { decorateRiskRecords, prepareRiskChange, registerRiskRoutes } from "./risk-api.js";
 
-const store = openStore();
+const defaultStore = openStore();
 
 function readCookie(req, name) {
   const header = req.headers.cookie || "";
@@ -40,18 +41,18 @@ function publicSession(extra = {}) {
       google: Boolean(process.env.APP_ORIGIN && process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
     },
     domains: ["blackengtech.com", "alvarezandmarsal.com"],
-    database: store.kind,
+    database: defaultStore.kind,
     ...extra,
   };
 }
 
-async function sessionFrom(req) {
+async function sessionFrom(req, store = defaultStore) {
   const id = readCookie(req, "sid");
   if (!id) return null;
   return store.readSession(id);
 }
 
-export function createApp() {
+export function createApp({ store = defaultStore } = {}) {
   const app = express();
   app.use(express.json({ limit: "3mb" }));
 
@@ -64,9 +65,9 @@ export function createApp() {
   });
 
   app.get("/api/session", async (req, res) => {
-    const session = await sessionFrom(req);
+    const session = await sessionFrom(req, store);
     if (!session || !isAllowedDomain(session.email)) {
-      res.json(publicSession());
+      res.json(publicSession({ database: store.kind }));
       return;
     }
     const environment = currentEnvironment();
@@ -78,6 +79,7 @@ export function createApp() {
       grantRevoked: Boolean(grant?.revoked_at),
     });
     res.json(publicSession({
+      database: store.kind,
       state: decision === "granted" ? "granted" : "pending",
       email: session.email,
       role: decision === "granted" ? grant.role : null,
@@ -136,7 +138,7 @@ export function createApp() {
   });
 
   app.get("/api/items", async (req, res) => {
-    const session = await sessionFrom(req);
+    const session = await sessionFrom(req, store);
     const environment = currentEnvironment();
     const grant = session ? await store.activeGrant(session.email, environment) : null;
     const decision = decideAccess({
@@ -157,7 +159,7 @@ export function createApp() {
   });
 
   app.post("/api/items", async (req, res) => {
-    const session = await sessionFrom(req);
+    const session = await sessionFrom(req, store);
     const environment = currentEnvironment();
     const grant = session ? await store.activeGrant(session.email, environment) : null;
     if (!session || !grant || grant.revoked_at) {
@@ -180,7 +182,7 @@ export function createApp() {
   });
 
   app.post("/api/access/grants", async (req, res) => {
-    const session = await sessionFrom(req);
+    const session = await sessionFrom(req, store);
     if (!session || !designatedAdministrators().includes(session.email)) {
       res.status(403).json({ message: "Only a designated administrator can grant a role." });
       return;
@@ -219,7 +221,7 @@ export function createApp() {
   }
 
   async function grantedActor(req) {
-    const session = await sessionFrom(req);
+    const session = await sessionFrom(req, store);
     const environment = currentEnvironment();
     const grant = session ? await store.activeGrant(session.email, environment) : null;
     const decision = decideAccess({
@@ -240,7 +242,7 @@ export function createApp() {
       return;
     }
     const rows = await store.listItems(actor.environment);
-    res.json({ environment: actor.environment, items: rows.map(parseReview).filter(Boolean) });
+    res.json({ environment: actor.environment, items: await decorateRiskRecords(store, actor.environment, rows.map(parseReview).filter(Boolean)) });
   });
 
   app.post("/api/workbench/items", async (req, res) => {
@@ -270,39 +272,38 @@ export function createApp() {
     }
     const latest = await store.latestVersion(code, actor.environment);
     const expected = Number(req.body?.version || 0);
-    if (latest && expected !== latest) {
+    if (!Number.isInteger(expected) || expected !== latest) {
       res.status(409).json({ message: `This record is now version ${latest}. Reload before saving.` });
       return;
     }
-    const record = normalizeReview({ ...req.body, code, kind: "review" });
+    const record = normalizeReview({ ...req.body, riskAssessment: req.body.riskAssessment === undefined ? existing?.riskAssessment : req.body.riskAssessment, code, kind: "review" });
     if (acting.practice) record.projectId = PRACTICE_PROJECT;
     record.preparedBy = existing?.preparedBy || acting.email;
     record.version = Math.max(latest, expected) + 1;
+    const riskBlock = await prepareRiskChange({ store, environment: actor.environment, actor: acting, existing, record, practice: Boolean(acting.practice) });
+    if (riskBlock) { res.status(403).json({ message: riskBlock }); return; }
     const block = privilegeDecision({ email: acting.email, role: acting.role }, existing, record);
     if (block) {
       res.status(403).json({ message: block });
       return;
     }
     if (record.status === "Approved") record.reviewedBy = acting.email;
-    const saved = await store.saveItem({
+    const saved = await store.saveReview({
       code,
-      kind: "review",
       status: record.status,
-      note: JSON.stringify(record),
       environment: actor.environment,
-    });
-    await store.appendVersion({
-      code,
-      environment: actor.environment,
-      version: record.version,
+      expectedVersion: latest,
       savedBy: actor.session.email,
       changeNote: acting.practice
         ? `Practice ${acting.role}. ${record.changeNote || "Saved from the workbench."}`.slice(0, 300)
         : (record.changeNote || "Saved from the workbench."),
       snapshot: JSON.stringify(record),
     });
+    if (!saved) { res.status(409).json({ message: "This record changed while you were saving. Reload before saving again." }); return; }
     res.json(parseReview(saved) || record);
   });
+
+  registerRiskRoutes(app, { store, grantedActor, parseReview });
 
   app.post("/api/workbench/practice", async (req, res) => {
     const actor = await grantedActor(req);
@@ -334,17 +335,11 @@ export function createApp() {
     }
     for (const sample of plan.created) {
       const record = { ...sample, version: 1 };
-      await store.saveItem({
+      await store.saveReview({
         code: record.code,
-        kind: "review",
         status: record.status,
-        note: JSON.stringify(record),
         environment: actor.environment,
-      });
-      await store.appendVersion({
-        code: record.code,
-        environment: actor.environment,
-        version: 1,
+        expectedVersion: 0,
         savedBy: actor.session.email,
         changeNote: "Practice sample for development testing.",
         snapshot: JSON.stringify(record),
@@ -382,7 +377,8 @@ export function createApp() {
       const existing = current.get(String(row.code || "").trim().toUpperCase());
       const outcome = applyImportRow(existing, row, actor.session.email);
       if (outcome.result === "applied") {
-        const privilege = importPrivilege(actor.grant.role, existing, outcome.record);
+        const riskBlock = await prepareRiskChange({ store, environment: actor.environment, actor: { email: actor.session.email, role: actor.grant.role }, existing, record: outcome.record, practice: false });
+        const privilege = riskBlock || importPrivilege(actor.grant.role, existing, outcome.record) || (existing?.riskAssessment && existing.status === "In review" ? "Return this risk assessment before importing changes." : "");
         if (privilege) {
           rejected += 1;
           results.push({ code: outcome.code, result: "rejected", message: privilege });
@@ -399,22 +395,21 @@ export function createApp() {
         results.push({ code: outcome.code, result: outcome.result, version: outcome.record.version, message: outcome.message });
         continue;
       }
-      await store.saveItem({
+      const saved = await store.saveReview({
         code: outcome.record.code,
-        kind: "review",
         status: outcome.record.status,
-        note: JSON.stringify(outcome.record),
         environment: actor.environment,
-      });
-      await store.appendVersion({
-        code: outcome.record.code,
-        environment: actor.environment,
-        version: outcome.record.version,
+        expectedVersion: outcome.record.version - 1,
         savedBy: actor.session.email,
         changeNote: outcome.message,
         batchId,
         snapshot: JSON.stringify(outcome.record),
       });
+      if (!saved) {
+        rejected += 1;
+        results.push({ code: outcome.code, result: "rejected", message: "This record changed during import. Export the register and retry." });
+        continue;
+      }
       current.set(outcome.record.code, outcome.record);
       applied += 1;
       results.push({ code: outcome.code, result: outcome.result, version: outcome.record.version, message: outcome.message });
@@ -455,7 +450,7 @@ export function createApp() {
       res.status(actor.error).json({ message: actor.message });
       return;
     }
-    const items = (await store.listItems(actor.environment)).map(parseReview).filter(Boolean);
+    const items = await decorateRiskRecords(store, actor.environment, (await store.listItems(actor.environment)).map(parseReview).filter(Boolean));
     const file = workbookFromRows(items);
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", "attachment; filename=\"MDC_Program_Assurance_Register.xlsx\"");
@@ -493,6 +488,9 @@ export function createApp() {
     const latest = await store.latestVersion(code, actor.environment);
     const restored = normalizeReview(JSON.parse(prior.snapshot));
     const current = parseReview((await store.listItems(actor.environment)).find((row) => row.code === code));
+    if (current?.riskAssessment && !["Open", "Returned"].includes(current.status)) {
+      res.status(403).json({ message: "Return this risk-assessed record before restoring a version." }); return;
+    }
     const privilege = restorePrivilege(actor.grant.role, restored, current);
     if (privilege) {
       res.status(403).json({ message: privilege });
@@ -500,22 +498,23 @@ export function createApp() {
     }
     restored.version = latest + 1;
     if (restored.status === "Approved" || restored.status === "In review") restored.status = "Returned";
+    if (current?.riskAssessment && !restored.riskAssessment) restored.riskAssessment = { ...current.riskAssessment, validation: null };
+    if (restored.riskAssessment) {
+      const riskBlock = await prepareRiskChange({ store, environment: actor.environment, actor: { email: actor.session.email, role: actor.grant.role }, existing: current, record: restored, practice: false });
+      if (riskBlock) { res.status(403).json({ message: riskBlock }); return; }
+      restored.riskAssessment.validation = null;
+    }
     restored.changeNote = `Restored version ${version} as version ${restored.version}. An approved or in-review snapshot comes back as returned.`;
-    await store.saveItem({
+    const saved = await store.saveReview({
       code,
-      kind: "review",
       status: restored.status,
-      note: JSON.stringify(restored),
       environment: actor.environment,
-    });
-    await store.appendVersion({
-      code,
-      environment: actor.environment,
-      version: restored.version,
+      expectedVersion: latest,
       savedBy: actor.session.email,
       changeNote: restored.changeNote,
       snapshot: JSON.stringify(restored),
     });
+    if (!saved) { res.status(409).json({ message: "This record changed during restore. Reload before restoring again." }); return; }
     res.json(restored);
   });
 
@@ -667,7 +666,7 @@ export function createApp() {
   });
 
   app.get("/api/access/grants", async (req, res) => {
-    const session = await sessionFrom(req);
+    const session = await sessionFrom(req, store);
     if (!session || !designatedAdministrators().includes(session.email)) {
       res.status(403).json({ message: "Only a designated administrator can review grants." });
       return;
@@ -680,5 +679,11 @@ export function createApp() {
     res.json({ environment, grants: await store.listGrants(environment) });
   });
 
+  app.use((error, _req, res, _next) => {
+    const invalid = error?.type === "entity.parse.failed";
+    res.status(invalid ? 400 : 500).json({ message: invalid
+      ? "The request could not be read. Refresh the page and retry."
+      : "The request could not be completed. Your unsaved entries remain on screen. Retry when the connection is available." });
+  });
   return app;
 }

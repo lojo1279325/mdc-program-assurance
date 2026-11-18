@@ -28,6 +28,11 @@ import { fieldBox, guideBanner, knownValues } from "./guidance.js";
 import { drawPracticeGuide } from "./practiceguide.js";
 import { drawStart, drawRecordPath, drawQuickGuide } from "./experience.js";
 import { rowsToCsv } from "./csv.js";
+import { REASSESSMENT_TRIGGERS, evaluateRisk, riskSummary } from "./risk-model.js";
+import {
+  affectedTriggerRecords, drawRiskAssessment, drawRiskPreview, drawRiskRules, drawTriggerScope, drawTriggers,
+  readPolicyForm, readRiskForm, riskBanner, riskRegisterRows, selectedPolicy, triggerRegisterRows,
+} from "./riskview.js";
 
 const state = {
   items: [],
@@ -50,6 +55,10 @@ const state = {
   dirty: false,
   saving: false,
   pendingNavigation: null,
+  assurance: null,
+  assuranceLoading: "",
+  assuranceError: "",
+  assuranceScope: "",
   notice: "This is the development workspace. Production is unchanged. A granted role is required before a record is stored.",
 };
 
@@ -72,6 +81,9 @@ const titles = {
   library: "Library",
   sources: "Sources",
   projects: "Projects",
+  risk: "Risk assessment",
+  triggers: "Change triggers",
+  riskrules: "Risk rules",
 };
 
 const main = document.querySelector("#main");
@@ -169,6 +181,11 @@ function goTo(view, { code, step } = {}) {
       if (actingRole() === "administrator") loadGrants().then(() => { if (state.view === "analysis") render(); });
     } else if (code) {
       state.selected = code;
+      if (["risk", "triggers"].includes(view)) {
+        state.query = "";
+        state.statusFilter = "all";
+        document.querySelector("#search").value = "";
+      }
     }
     state.view = view;
     document.querySelector("#nav-toggle").checked = false;
@@ -179,6 +196,11 @@ function goTo(view, { code, step } = {}) {
 }
 
 function render() {
+  if (state.assuranceScope !== state.project) {
+    state.assurance = null;
+    state.assuranceError = "";
+    state.assuranceScope = state.project;
+  }
   document.querySelector("#more-actions").open = false;
   title.textContent = titles[state.view];
   notice.textContent = state.notice;
@@ -235,6 +257,9 @@ function render() {
         library: state.library,
       });
     },
+    risk: () => drawRiskAssessment(assuranceContext()),
+    triggers: () => drawTriggers(assuranceContext()),
+    riskrules: () => drawRiskRules(assuranceContext()),
   };
   syncProjectSelect();
   syncPracticeBar();
@@ -250,6 +275,7 @@ function render() {
   profile.setAttribute("aria-label", state.session?.state === "granted" ? "Open account and sign-in page" : "Sign-in page");
   main.dataset.view = state.view;
   main.innerHTML = draw[state.view]();
+  if (["risk", "triggers", "riskrules"].includes(state.view) && state.assurance?.projectId !== state.project && !state.assuranceError && state.assuranceLoading !== state.project) loadAssurance();
   syncRoleControls();
   bind();
   const currentPreview = main.querySelector('.preview[aria-current="true"]');
@@ -296,7 +322,7 @@ function drawQueue() {
       <small>${esc(item.layer)} · v${esc(item.version || 0)} · ${esc(item.ownerRole)} prepares · ${esc(item.reviewerRole)} reviews</small>
       ${pills(item)}
     </button>`).join("")}</div>
-    <div class="pane">${current ? drawRecordPath(current, actor()) + form(current) : ""}</div>
+    <div class="pane">${current ? drawRecordPath(current, actor()) + riskBanner(current) + form(current) : ""}</div>
   </div>`;
 }
 
@@ -356,7 +382,8 @@ function drawOutputs(items = projectItems()) {
     ${actions.length ? actions.map((action) => `<p>${esc(action.text)}</p>`).join("") : "<p>No open actions. Add a review to generate the list.</p>"}
     ${allActions.length > actions.length ? `<p class="quiet">${allActions.length - actions.length} more actions are in the exported register.</p>` : ""}
     <p class="quiet">This download follows the selected project. The workbook export on Updates covers the full register.</p>
-    <div class="row-actions"><button type="button" id="download" class="primary">Download selected project</button></div>
+    <div class="row-actions"><button type="button" id="download" class="primary">Download selected project</button><button type="button" data-risk-export="assessments">Export risk assessments</button></div>
+    <p class="quiet">The risk export separates preliminary, inherent, residual, and validated final ratings. Material changes and policy changes are explicit decision holds.</p>
   </div>
   <div style="overflow:auto;margin-top:12px;">
     <table>
@@ -520,6 +547,7 @@ async function persist(item, quiet = false) {
       return null;
     }
     const saved = normalizeReview(body);
+    if (item.reassessment) saved.reassessment = item.reassessment;
     state.dirty = false;
     state.saving = false;
     replace(saved);
@@ -550,7 +578,7 @@ function bind() {
       });
     });
   });
-  main.querySelectorAll("#review-form, #wizard-form").forEach((formElement) => {
+  main.querySelectorAll("#review-form, #wizard-form, #risk-assessment-form, #risk-policy-form, #trigger-log-form, .trigger-review-form").forEach((formElement) => {
     const markDirty = () => { state.dirty = true; };
     formElement.addEventListener("input", markDirty);
     formElement.addEventListener("change", markDirty);
@@ -625,6 +653,7 @@ function bind() {
       });
     });
   }
+  bindRiskControls();
   const download = document.querySelector("#download");
   if (download) download.addEventListener("click", exportRegister);
   const exportWorkbook = document.querySelector("#export-workbook");
@@ -651,7 +680,7 @@ function bind() {
       if (button.dataset.brief === "next") state.slide = Math.min(last, state.slide + 1);
       if (button.dataset.brief === "export") {
         downloadFile(briefToPptx(brief), `${state.project}-decision-brief.pptx`, "application/vnd.openxmlformats-officedocument.presentationml.presentation");
-        setNotice("The brief is downloading. Its decision line uses approved records; readiness and open items cover the whole selected project.");
+        setNotice("The brief is downloading. Its decision line excludes approvals awaiting material-change disposition or policy revalidation.");
         return;
       }
       if (button.dataset.brief === "vendors") {
@@ -710,6 +739,167 @@ function bind() {
       goTo(button.dataset.open || "queue", { code: button.dataset.code });
     });
   });
+}
+
+function assuranceContext() {
+  return {
+    items: projectItems(), record: selected(), actor: actor(), projectId: state.project,
+    assurance: state.assurance?.projectId === state.project ? state.assurance : null,
+    loading: state.assuranceLoading === state.project, error: state.assuranceError,
+  };
+}
+
+async function loadAssurance(renderAfter = true) {
+  const project = state.project;
+  if (state.assuranceLoading === project) return;
+  state.assuranceLoading = project;
+  state.assuranceError = "";
+  try {
+    const response = await fetch(`/api/assurance?project=${encodeURIComponent(project)}`, { credentials: "include", cache: "no-store", headers: practiceHeaders() });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.message || "Risk policy and events could not be loaded.");
+    if (state.project === project) state.assurance = body;
+  } catch (error) {
+    if (state.project === project) state.assuranceError = `${error.message} Use Refresh saved data to retry.`;
+  } finally {
+    if (state.assuranceLoading === project) state.assuranceLoading = "";
+    if (renderAfter && state.project === project && !state.dirty && ["risk", "triggers", "riskrules"].includes(state.view)) render();
+  }
+}
+
+async function refreshRiskData() {
+  const [response] = await Promise.all([
+    fetch("/api/workbench", { credentials: "include", cache: "no-store" }),
+    loadAssurance(false),
+  ]);
+  if (!response.ok) { setNotice("The saved register could not be refreshed. Sign in again if your session expired."); return; }
+  const body = await response.json();
+  state.items = Array.isArray(body.items) ? body.items.map(normalizeReview) : state.items;
+  render();
+}
+
+async function saveRiskRequest(url, body, formElement) {
+  if (state.saving) return false;
+  state.saving = true;
+  const buttons = [...formElement.querySelectorAll("button[type=submit]")];
+  buttons.forEach(button => { button.disabled = true; });
+  try {
+    const response = await fetch(url, { method: "POST", credentials: "include", headers: practiceHeaders(), body: JSON.stringify({ ...body, projectId: state.project }) });
+    const saved = await response.json().catch(() => ({}));
+    if (!response.ok) { setNotice(saved.message || "The change was not saved. Your entries remain on screen."); return false; }
+    state.dirty = false;
+    setNotice(saved.message || "Saved. The event and policy history are retained.");
+    await refreshRiskData();
+    return true;
+  } catch {
+    setNotice("The connection failed. Your entries remain on screen. Retry when connected.");
+    return false;
+  } finally {
+    state.saving = false;
+    buttons.forEach(button => { button.disabled = false; });
+  }
+}
+
+function bindRiskControls() {
+  main.querySelector("#risk-record")?.addEventListener("change", (event) => {
+    const code = event.target.value;
+    event.target.value = selected()?.code || "";
+    leaveForm(() => { state.selected = code; render(); });
+  });
+  main.querySelectorAll("[data-risk-refresh]").forEach(button => button.addEventListener("click", () => leaveForm(() => {
+    state.assuranceError = "";
+    refreshRiskData().catch(() => setNotice("The refresh failed. Check your connection and retry."));
+  })));
+  const riskForm = main.querySelector("#risk-assessment-form");
+  if (riskForm) {
+    const preview = () => {
+      const item = readRiskForm(riskForm, selected());
+      const policy = item.riskAssessment.policy || selectedPolicy(state.assurance, state.project);
+      main.querySelector("#risk-preview").innerHTML = drawRiskPreview(item.riskAssessment, policy, item, true);
+    };
+    riskForm.addEventListener("input", preview);
+    riskForm.addEventListener("change", preview);
+    riskForm.addEventListener("submit", async event => {
+      event.preventDefault();
+      const next = readRiskForm(riskForm, selected());
+      next.changeNote = riskForm.dataset.mode === "review" ? "Validated the risk assessment and final recommendation." : "Updated the risk assessment, evidence, and follow-up.";
+      const saved = await persist(next);
+      if (saved) await refreshRiskData();
+    });
+    riskForm.querySelectorAll("[data-risk-transition]").forEach(button => button.addEventListener("click", async () => {
+      const status = button.dataset.riskTransition;
+      if (status === "Approved" && state.dirty) { setNotice("Save the validation before approving this record."); return; }
+      const save = async () => {
+        if (status === "In review" && !riskForm.reportValidity()) return;
+        const next = status === "In review" ? readRiskForm(riskForm, selected()) : normalizeReview(selected());
+        next.status = status;
+        next.changeNote = status === "Returned" ? "Returned for targeted risk reassessment." : `Risk assessment moved to ${status.toLowerCase()}.`;
+        if (status === "Returned") next.updates.push({ at: new Date().toISOString(), by: actingEmail(), role: actingRole(), text: next.changeNote });
+        const saved = await persist(next);
+        if (saved) await refreshRiskData();
+      };
+      if (status === "Returned") leaveForm(save);
+      else await save();
+    }));
+  }
+  const triggerForm = main.querySelector("#trigger-log-form");
+  if (triggerForm) {
+    const updateScope = () => {
+      const fields = triggerForm.elements;
+      fields.recordCode.closest("label").hidden = fields.scopeKind.value === "vendor";
+      fields.scopeLabel.closest("label").hidden = fields.scopeKind.value !== "vendor";
+      main.querySelector("#trigger-scope-preview").innerHTML = drawTriggerScope(affectedTriggerRecords(triggerForm, projectItems(), selected()));
+      const category = REASSESSMENT_TRIGGERS.find(row => row.id === fields.type.value);
+      main.querySelector("#trigger-type-help").textContent = category?.event || "";
+    };
+    updateScope();
+    triggerForm.addEventListener("change", updateScope);
+    triggerForm.addEventListener("submit", async event => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(triggerForm));
+      const affected = affectedTriggerRecords(triggerForm, projectItems(), selected());
+      if (!affected.length) { setNotice("Choose at least one affected record in this project."); return; }
+      triggerForm.dataset.batch ||= crypto.randomUUID();
+      const category = REASSESSMENT_TRIGGERS.find(row => row.id === data.type);
+      await saveRiskRequest("/api/assurance/triggers", {
+        ...data, codes: affected.map(item => item.code), rules: category?.rules || [],
+        batchId: triggerForm.dataset.batch, scopeLabel: data.scopeKind === "vendor" ? data.scopeLabel : affected[0].code,
+      }, triggerForm);
+    });
+  }
+  main.querySelectorAll(".trigger-review-form").forEach(formElement => formElement.addEventListener("submit", async event => {
+    event.preventDefault();
+    const data = new FormData(formElement);
+    await saveRiskRequest(`/api/assurance/triggers/${encodeURIComponent(formElement.dataset.key)}`, {
+      ...Object.fromEntries(data), rules: data.getAll("rules"), action: event.submitter.value, version: Number(formElement.dataset.version),
+    }, formElement);
+  }));
+  const policyForm = main.querySelector("#risk-policy-form");
+  policyForm?.addEventListener("submit", async event => {
+    event.preventDefault();
+    const body = readPolicyForm(policyForm);
+    const action = event.submitter.value;
+    if (action === "approve" && !body.acknowledge) { setNotice("Review the policy and acknowledge its effect before approving a new version."); return; }
+    const saved = await saveRiskRequest("/api/assurance/policy", { ...body, action }, policyForm);
+    if (saved) setNotice(action === "approve" ? "Risk rules approved for this project. Existing assessments using an earlier policy require revalidation." : "Draft rules saved. The active policy is unchanged.");
+  });
+  main.querySelectorAll("[data-risk-export]").forEach(button => button.addEventListener("click", () => {
+    const events = button.dataset.riskExport === "triggers";
+    downloadFile(rowsToCsv(events ? triggerRegisterRows(state.assurance?.triggers || []) : riskRegisterRows(projectItems())), `${state.project}-${events ? "change-trigger-log" : "risk-assessments"}.csv`, "text/csv");
+    setNotice("The selected-project export is downloading. Personal names and account identifiers are excluded.");
+  }));
+  main.querySelectorAll("[data-risk-history]").forEach(button => button.addEventListener("click", async () => {
+    const dialog = document.querySelector("#risk-history-dialog");
+    const area = dialog.querySelector("#risk-history-content");
+    area.innerHTML = "<p>Loading saved versions.</p>";
+    dialog.showModal();
+    try {
+      const response = await fetch(`/api/assurance/history?project=${encodeURIComponent(state.project)}&kind=${encodeURIComponent(button.dataset.riskHistory)}&key=${encodeURIComponent(button.dataset.key)}`, { credentials: "include", cache: "no-store", headers: practiceHeaders() });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.message);
+      area.innerHTML = (body.history || []).map(row => `<article><h3>Version ${row.version}</h3><p>${esc(new Date(row.savedAt).toLocaleString())}</p><p>${esc(row.kind === "policy" ? `${row.payload.active?.id || "Draft policy"}. ${row.payload.draft?.appetiteReference || "No approval reference."}` : `${row.payload.materiality}. ${row.payload.rationale || row.payload.summary}`)}</p></article>`).join("");
+    } catch (error) { area.textContent = error.message || "History could not be loaded."; }
+  }));
 }
 
 async function downloadWorkbook() {
@@ -815,7 +1005,12 @@ async function restoreVersion(version) {
 }
 
 function exportRegister() {
-  const rows = state.client ? clientView(projectItems()) : projectItems().map(normalizeReview);
+  const rows = state.client ? clientView(projectItems()) : projectItems().map(item => {
+    const row = normalizeReview(item);
+    delete row.riskAssessment;
+    delete row.reassessment;
+    return { ...row, ...riskSummary(item) };
+  });
   if (!rows.length) return;
   const csv = rowsToCsv(rows);
   const link = document.createElement("a");
