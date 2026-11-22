@@ -83,6 +83,11 @@ export function drawQuickGuide({ view, role, projectName, practice }) {
     risk: ["Explain the risk assessment", "Complete the relevant rule facts and dated evidence. Save, send for different-person review, then validate the final risk and action. Draft policies cannot authorize real decisions.", "riskrules", "Review risk rules"],
     triggers: ["Review a changed condition", "Log an event for a record or a vendor in the selected project. The assigned reviewer determines materiality. Material changes need a targeted reassessment and a documented disposition.", "risk", "Open risk assessment"],
     riskrules: ["Configure client risk appetite", "A designated administrator records and approves the qualitative mapping. Saving a draft preserves the active policy. A new approved version requires existing risk assessments to be revalidated.", "risk", "Open risk assessment"],
+    program: ["Plan the program from the design basis", "Save who uses the site, how it is powered, the chip platform, and the region. The workbench then shows the reference design, the regional kit, and the rules that follow. NSTT prepares each gate. CPI records Gates 0, 2, and 3, and Trade records Gates 1, 4, and 5.", "sourcing", "Open sourcing workflow"],
+    sourcing: ["Choose a primary and an alternate for each part", "Add a line under a subsystem, choose the primary part, and read its benchmark. Name an alternate from a different ultimate parent, complete the checklist and contract terms, then send the line to review. Trade reviews a line when a trade rule applies. CPI reviews the rest.", "repository", "Open the repository"],
+    repository: ["Confirm the cited facts for each vendor and part", "Each value starts from the most trusted public source found and shows that source. Confirm or change the fields marked with your role. A change needs a reason. Run the analysis to fill open fields with cited values.", "sourcing", "Open sourcing workflow"],
+    watch: ["Read the daily update and record what is material", "The workbench reads the government sources and press leads every day and screens the vendor names. Trade and CPI record whether an item is material. A material item flags vendors, parts, and sourcing lines for recheck. It never changes an approved decision.", "repository", "Open the repository"],
+    portfolio: ["Compare every project in one view", "Each project shows its reference design, current gate, next date, sourcing coverage, open gate items, and lines to recheck. Open a project to work on its plan.", "program", "Open program plan"],
     home: ["Start with the next action", "Read your project and role, then use the main button on Start here. My work shows the records waiting on your role.", "mine", "Open my work"],
     mine: ["Find work assigned to you", "Open an assigned record to continue its analysis or review. Approved records are read-only.", "analysis", "Open guided analysis"],
     analysis: role === "administrator"
@@ -106,15 +111,46 @@ export function drawQuickGuide({ view, role, projectName, practice }) {
     updates: ["Keep a versioned record", "The workbook covers the full register. Review its scope before importing. A record save creates a version; opening this screen does not import or restore anything.", "queue", "Open review queue"],
     sources: ["Use source checks as evidence", "Connection status identifies available providers. A search result is supporting evidence, not a screening clearance or an approval.", "analysis", "Open guided analysis"],
   };
+  // The design and sourcing screens each have their own three steps and closing rule.
+  const flows = {
+    program: [[
+      ["Save the design basis", "NSTT saves who uses the site, how it is powered, the chip platform, and the region. The basis is frozen when Gate 0 passes."],
+      ["Prepare each gate", "NSTT marks the evidence that is held, logs each gap as an open item with an owner and a due date, and sets the gate ready for decision."],
+      ["Record the decision", "CPI records Gates 0, 2, and 3. Trade records Gates 1, 4, and 5. Each decision carries the reference of the signed decision."],
+    ], "Missing evidence holds a gate. A passed gate changes only when it is reopened with a reason."],
+    sourcing: [[
+      ["Add the line", "NSTT chooses the subsystem, the part type, and the primary part from the repository."],
+      ["Benchmark and name an alternate", "Read the posture, the confidence, and the fit. Name an alternate from a different ultimate parent, or state why none exists."],
+      ["Send to review", "Trade reviews a line when a trade rule applies. CPI reviews the rest. An Orange line needs a note that states the mitigation."],
+    ], "Posture, confidence, and fit are separate. A missing fact lowers confidence and adds an information request. It does not raise the posture."],
+    repository: [[
+      ["Open a vendor or a part", "Each field shows its value, its source, the kind of source, and the date."],
+      ["Run the analysis", "It checks the government lists and the legal entity registry, then looks for the open fields and cites the page for each one."],
+      ["Confirm or change your fields", "CPI owns the supplier facts, Trade owns the rule fields, and NSTT owns the design fields. A change needs a reason."],
+    ], "A value of n.a. means no trusted public source was found. A confirmation records who checked the value and when."],
+    watch: [[
+      ["Check the sources", "The daily check reads the government sources and the press leads and screens every vendor name. Check now runs it on request."],
+      ["Record what is material", "Trade records materiality for export, list, and executive action topics. CPI records it for control system advisories and grid rules."],
+      ["Recheck what is flagged", "A material item flags the vendors, parts, and sourcing lines it touches. The owning role clears each flag with a note."],
+    ], "A press item is a lead until a government source confirms it. Every check is logged with the sources it read."],
+    portfolio: [[
+      ["Scan the projects", "Each row shows the reference design, the current gate, and the next date."],
+      ["Compare the coverage", "See how many subsystems have a primary part, an alternate, and an approved line, and how many lines need a recheck."],
+      ["Open the project", "Opening a row switches the workbench to that project and shows its program plan."],
+    ], "Counts come from saved records. A project with no saved design basis shows as not started."],
+  };
+  const [steps, closing] = flows[view] || [[
+    ["Prepare", "NSTT records the analysis and sends it to review."],
+    ["Review", "The assigned CPI or Trade reviewer records a decision."],
+    ["Decide", "Approved records feed the decision line and executive outputs."],
+  ], "Risk, confidence, and action are separate. Missing facts lower confidence, not risk. Every component needs Future Policy/Lifecycle."];
   const [title, detail, target, action] = guides[view] || ["Choose the next step", "Use the navigation to return to your assigned work or read the role-by-role practice instructions.", "home", "Open Start here"];
   return `<div class="guide-heading"><div><p class="kicker">Quick guide</p><h2 id="quick-guide-title">${esc(title)}</h2></div><button type="button" class="ghost" data-guide-close autofocus>Close</button></div>
     <p class="guide-context">${esc(projectName)} · ${esc(ROLE_LABEL[role] || "No granted role")}${practice ? " · Practice only" : ""}</p>
     <p>${esc(detail)}</p>
     <ol class="guide-flow">
-      <li><span>1</span><div><strong>Prepare</strong><p>NSTT records the analysis and sends it to review.</p></div></li>
-      <li><span>2</span><div><strong>Review</strong><p>The assigned CPI or Trade reviewer records a decision.</p></div></li>
-      <li><span>3</span><div><strong>Decide</strong><p>Approved records feed the decision line and executive outputs.</p></div></li>
+      ${steps.map(([name, text], index) => `<li><span>${index + 1}</span><div><strong>${esc(name)}</strong><p>${esc(text)}</p></div></li>`).join("\n      ")}
     </ol>
-    <p class="quiet">Risk, confidence, and action are separate. Missing facts lower confidence, not risk. Every component needs Future Policy/Lifecycle.</p>
+    <p class="quiet">${esc(closing)}</p>
     <div class="row-actions"><button type="button" class="primary" data-guide-to="${target}">${action}</button><button type="button" class="ghost" data-guide-to="duties">Role-by-role instructions</button></div>`;
 }

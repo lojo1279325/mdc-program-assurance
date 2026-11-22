@@ -33,6 +33,7 @@ import {
   affectedTriggerRecords, drawRiskAssessment, drawRiskPreview, drawRiskRules, drawTriggerScope, drawTriggers,
   readPolicyForm, readRiskForm, riskBanner, riskRegisterRows, selectedPolicy, triggerRegisterRows,
 } from "./riskview.js";
+import { GUIDE_FORMS, GUIDE_TITLES, GUIDE_VIEWS, createGuide } from "./guidecontrol.js";
 
 const state = {
   items: [],
@@ -84,11 +85,14 @@ const titles = {
   risk: "Risk assessment",
   triggers: "Change triggers",
   riskrules: "Risk rules",
+  ...GUIDE_TITLES,
 };
 
 const main = document.querySelector("#main");
 const notice = document.querySelector("#notice");
 const title = document.querySelector("#view-title");
+// The design and sourcing screens keep their own saved data and handlers.
+const guide = createGuide({ state, main, render, setNotice, leaveForm, goTo, practiceHeaders, actingRole, downloadFile, openProject });
 
 function esc(value) {
   return String(value ?? "")
@@ -146,6 +150,7 @@ function selected() {
 
 function setNotice(text) {
   state.notice = text;
+  state.noticeView = state.view;
   notice.textContent = text;
 }
 
@@ -187,6 +192,8 @@ function goTo(view, { code, step } = {}) {
         document.querySelector("#search").value = "";
       }
     }
+    // A notice from a design and sourcing screen describes an action on that screen. It is cleared when another screen opens.
+    if (view !== state.view && GUIDE_VIEWS.includes(state.noticeView)) setNotice("");
     state.view = view;
     document.querySelector("#nav-toggle").checked = false;
     render();
@@ -260,6 +267,7 @@ function render() {
     risk: () => drawRiskAssessment(assuranceContext()),
     triggers: () => drawTriggers(assuranceContext()),
     riskrules: () => drawRiskRules(assuranceContext()),
+    ...Object.fromEntries(GUIDE_VIEWS.map((view) => [view, () => guide.draw(view)])),
   };
   syncProjectSelect();
   syncPracticeBar();
@@ -274,10 +282,12 @@ function render() {
     : "Sign in";
   profile.setAttribute("aria-label", state.session?.state === "granted" ? "Open account and sign-in page" : "Sign-in page");
   main.dataset.view = state.view;
+  main.classList.toggle("guide-view", GUIDE_VIEWS.includes(state.view));
   main.innerHTML = draw[state.view]();
   if (["risk", "triggers", "riskrules"].includes(state.view) && state.assurance?.projectId !== state.project && !state.assuranceError && state.assuranceLoading !== state.project) loadAssurance();
   syncRoleControls();
   bind();
+  guide.ensure();
   const currentPreview = main.querySelector('.preview[aria-current="true"]');
   if (currentPreview) {
     const strip = currentPreview.parentElement;
@@ -578,7 +588,7 @@ function bind() {
       });
     });
   });
-  main.querySelectorAll("#review-form, #wizard-form, #risk-assessment-form, #risk-policy-form, #trigger-log-form, .trigger-review-form").forEach((formElement) => {
+  main.querySelectorAll(`#review-form, #wizard-form, #risk-assessment-form, #risk-policy-form, #trigger-log-form, .trigger-review-form, ${GUIDE_FORMS}`).forEach((formElement) => {
     const markDirty = () => { state.dirty = true; };
     formElement.addEventListener("input", markDirty);
     formElement.addEventListener("change", markDirty);
@@ -739,6 +749,7 @@ function bind() {
       goTo(button.dataset.open || "queue", { code: button.dataset.code });
     });
   });
+  guide.bind();
 }
 
 function assuranceContext() {
@@ -1265,6 +1276,29 @@ document.querySelector("#project").addEventListener("change", (event) => {
   render();
   });
 });
+
+// Opens another project on a chosen screen. The portfolio uses it.
+function openProject(code, name, view) {
+  leaveForm(() => {
+    if (!state.projects.some((project) => project.code === code)) state.projects = [...state.projects, { code, name: name || code, status: "Active" }];
+    const leftPractice = Boolean(state.practiceRole && code !== "PRACTICE");
+    if (leftPractice) state.practiceRole = "";
+    state.project = code;
+    state.query = "";
+    state.statusFilter = "all";
+    state.wizardStep = 0;
+    state.slide = 0;
+    document.querySelector("#search").value = "";
+    state.selected = visibleItems()[0]?.code || "";
+    state.view = view;
+    setNotice(leftPractice
+      ? `Showing ${name || code}. Practice role is off because this is not the practice project.`
+      : `Showing ${name || code}. Every screen now follows this project.`);
+    render();
+    scrollWorkToTop();
+    title.focus({ preventScroll: true });
+  });
+}
 
 document.querySelector("#search").addEventListener("input", (event) => {
   const query = event.target.value;

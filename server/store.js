@@ -3,6 +3,7 @@ import fs from "node:fs";
 import pg from "pg";
 import { ENVIRONMENTS, ROLES, normalizeEmail } from "./policy.js";
 import { RISK_SCHEMA, riskMemory, riskFile, riskPostgres } from "./risk-store.js";
+import { GUIDE_SCHEMA, guideMemory, guideFile, guidePostgres } from "./guide-store.js";
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS access_grants (
@@ -99,7 +100,8 @@ CREATE TABLE IF NOT EXISTS source_lookups (
   payload TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS source_lookups_subject ON source_lookups (environment, subject_key, observed_at);
-${RISK_SCHEMA}`;
+${RISK_SCHEMA}
+${GUIDE_SCHEMA}`;
 
 function nowIso() {
   return new Date().toISOString();
@@ -192,6 +194,7 @@ export function createMemory() {
     ...versionMemory(items),
     ...catalogMemory(),
     ...riskMemory(),
+    ...guideMemory(),
   };
 }
 
@@ -272,6 +275,7 @@ function createFileStore() {
     ...versionFile(read, write),
     ...catalogFile(read, write),
     ...riskFile(read, write),
+    ...guideFile(read, write),
   };
 }
 
@@ -349,6 +353,7 @@ function createPostgres(connectionString) {
     ...versionPostgres(pool, ensure),
     ...catalogPostgres(pool, ensure),
     ...riskPostgres(pool, ensure),
+    ...guidePostgres(pool, ensure),
   };
 }
 

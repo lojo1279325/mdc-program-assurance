@@ -15,6 +15,7 @@ import { lookupSources, sourceStatus } from "./sources.js";
 import { PRACTICE_PROJECT, practiceActor, practiceRoleFrom, practiceSeedPlan } from "./practice.js";
 import { rowsFromWorkbook, workbookFromRows } from "./sheet.js";
 import { decorateRiskRecords, prepareRiskChange, registerRiskRoutes } from "./risk-api.js";
+import { registerGuideRoutes } from "./guide-api.js";
 
 const defaultStore = openStore();
 
@@ -52,7 +53,7 @@ async function sessionFrom(req, store = defaultStore) {
   return store.readSession(id);
 }
 
-export function createApp({ store = defaultStore } = {}) {
+export function createApp({ store = defaultStore, fetchImpl } = {}) {
   const app = express();
   app.use(express.json({ limit: "3mb" }));
 
@@ -304,6 +305,7 @@ export function createApp({ store = defaultStore } = {}) {
   });
 
   registerRiskRoutes(app, { store, grantedActor, parseReview });
+  registerGuideRoutes(app, { store, grantedActor, fetchImpl });
 
   app.post("/api/workbench/practice", async (req, res) => {
     const actor = await grantedActor(req);
