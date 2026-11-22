@@ -42,6 +42,11 @@ Five screens follow the MDC design, sourcing, and power guide. They sit in the n
 
 The person who prepared a line or a gate cannot approve it.
 
+A role can differ by project. A designated administrator assigns a project role on the Start here screen. An administrator takes no working role, and the practice project keeps its practice roles.
+
+- The plan, the gates, and the sourcing lines follow the role a person holds in that project.
+- The repository and the watch are shared by every project. A change there is recorded under the role the person holds in the project that is open, and it applies to every project.
+
 ### Where the facts come from
 
 A posture is an indication for the reviewing role to confirm, and legal conclusions stay with counsel. A missing fact lowers confidence and creates an information request. The posture follows only the facts on record.
@@ -58,6 +63,13 @@ Every value from these sources starts as unconfirmed. The owning role confirms i
 ### Daily check
 
 `vercel.json` schedules `/api/watch/cron` once a day in the hour that starts at 11:00 UTC. The host runs scheduled checks on the production deployment only and sends `CRON_SECRET` as a bearer token. In every environment, opening a design and sourcing screen starts a catch-up check when no check ran in the last 20 hours, and any granted role can choose Check now.
+
+Development and test get a scheduled check only when both of these are in place:
+
+1. `CRON_SECRET` is set in the host for that environment.
+2. An outside scheduler calls `GET /api/watch/cron` on that environment once a day with the header `Authorization: Bearer <CRON_SECRET>`.
+
+The route answers 503 when the secret is not set and 401 when the token does not match. The watch reports the schedule as active while a scheduled check has arrived in the last 36 hours. Production also counts as active before its first scheduled check is on record. When the secret is set and no scheduled check has arrived in that time, the watch says so and asks an administrator to confirm that the scheduler is running.
 
 A check keeps an item when it touches a rule topic or clearly names a vendor in the repository. On the general feeds for laws, bills, executive orders, and presidential actions, a one-word vendor name counts only when that vendor has a list entry or a 22 CFR 126.1 country link. This keeps out a bill that is named after a person who shares a name with a vendor.
 

@@ -30,7 +30,81 @@ export function workPlan(actor, items = []) {
     : { title: "No records are waiting on your role", detail: "Use the review queue to browse records or check the project’s progress.", action: "View review queue", task: "queue", items: [], next: null };
 }
 
-export function drawStart({ actor, items, projectName, practice, canPractice, signedIn }) {
+const ROLE_SUMMARY = {
+  administrator: "Manage access and projects. Preparation and approval belong to the working roles.",
+  nstt: "Prepare the facts and recommended action. A different reviewer approves.",
+  cpi: "Review assigned records and decide materiality on change events. Preparation fields stay read-only.",
+  trade: "Review trade-sensitive records and assigned reviews. Preparation fields stay read-only.",
+};
+
+// What each role needs to see first. Each tile opens the matching filter or screen.
+function focusTiles(role, items) {
+  const count = (test) => items.filter(test).length;
+  if (role === "nstt") {
+    return [
+      { label: "Returned to you", value: count((item) => item.status === "Returned"), note: "Fix and resend", attr: 'data-status-filter="Returned"' },
+      { label: "Open drafts", value: count((item) => item.status === "Open"), note: "Finish and send", attr: 'data-status-filter="Open"' },
+      { label: "Sent to review", value: count((item) => item.status === "In review"), note: "With a reviewer", attr: 'data-status-filter="In review"' },
+      { label: "Reassessment holds", value: count((item) => item.reassessment?.materialCount || item.reassessment?.policyChanged), note: "Material change or new rules", attr: 'data-open="triggers"' },
+    ];
+  }
+  if (role === "cpi") {
+    return [
+      { label: "Waiting for your review", value: count((item) => item.status === "In review" && item.reviewerRole === "cpi"), note: "Assigned to CPI", attr: 'data-status-filter="In review"' },
+      { label: "Events to classify", value: count((item) => item.reassessment?.pendingCount), note: "Materiality decision", attr: 'data-open="triggers"' },
+      { label: "Reassessment holds", value: count((item) => item.reassessment?.materialCount || item.reassessment?.policyChanged), note: "Blocked from the decision line", attr: 'data-open="risk"' },
+      { label: "Approved", value: count((item) => item.status === "Approved"), note: "On the decision line", attr: 'data-status-filter="Approved"' },
+    ];
+  }
+  if (role === "trade") {
+    return [
+      { label: "Waiting for your review", value: count((item) => item.status === "In review" && (item.reviewerRole === "trade" || item.tradeSensitive)), note: "Trade reviewer or trade-sensitive", attr: 'data-status-filter="In review"' },
+      { label: "Trade-sensitive records", value: count((item) => item.tradeSensitive), note: "Across this project", attr: 'data-open="queue"' },
+      { label: "Events to classify", value: count((item) => item.reassessment?.pendingCount), note: "Materiality decision", attr: 'data-open="triggers"' },
+      { label: "Approved", value: count((item) => item.status === "Approved"), note: "On the decision line", attr: 'data-status-filter="Approved"' },
+    ];
+  }
+  return [];
+}
+
+function quickActions(role) {
+  const sets = {
+    nstt: [["new", "New analysis", true], ["risk", "Risk assessment"], ["triggers", "Log a change event"], ["updates", "Import a workbook"]],
+    cpi: [["queue", "Open review queue", true], ["risk", "Risk assessment"], ["triggers", "Classify change events"], ["brief", "Decision brief"]],
+    trade: [["queue", "Open review queue", true], ["risk", "Risk assessment"], ["triggers", "Classify change events"], ["vendors", "Vendor map"]],
+    administrator: [["access", "Manage access grants", true], ["riskrules", "Risk rules"], ["projects", "Projects"], ["triggers", "Change triggers"]],
+  };
+  return (sets[role] || []).map(([target, label, primary]) => {
+    const task = ["new", "access", "queue"].includes(target);
+    return `<button type="button" class="${primary ? "primary" : ""}" ${task ? `data-task="${target}"` : `data-open="${target}"`}>${esc(label)}</button>`;
+  }).join("");
+}
+
+export function drawRoster(roster, { project = "", saving = "" } = {}) {
+  if (!roster) return `<p class="quiet">Project roles are loading.</p>`;
+  if (roster.error) return `<p class="quiet">${esc(roster.error)}</p>`;
+  const projects = roster.projects || [];
+  const code = projects.some((entry) => entry.code === project) ? project : projects[0]?.code || "";
+  const current = roster.rosters?.[code] || { assignments: {}, version: 0 };
+  const members = roster.members || [];
+  const options = (member) => {
+    const chosen = current.assignments?.[member.email] || "";
+    const defaultLabel = ROLE_LABEL[member.role] || member.role;
+    return [["", `Default (${defaultLabel})`], ["nstt", ROLE_LABEL.nstt], ["cpi", ROLE_LABEL.cpi], ["trade", ROLE_LABEL.trade]]
+      .map(([value, label]) => `<option value="${value}" ${value === chosen ? "selected" : ""}>${esc(label)}</option>`).join("");
+  };
+  return `<div class="roster" aria-label="Quick role assignment">
+    <label class="roster-project">Project <select id="roster-project">${projects.map((entry) => `<option value="${esc(entry.code)}" ${entry.code === code ? "selected" : ""}>${esc(entry.code)} · ${esc(entry.name)}</option>`).join("")}</select></label>
+    ${members.length ? `<ul class="roster-list">${members.map((member) => {
+      const assigned = current.assignments?.[member.email];
+      return `<li><span class="roster-person"><strong>${esc(member.email)}</strong><small>${assigned ? `Assigned ${esc(ROLE_LABEL[assigned] || assigned)} in ${esc(code)}` : `Uses default role ${esc(ROLE_LABEL[member.role] || member.role)}`}</small></span>
+        <label class="roster-role"><span class="sr-only">Role for ${esc(member.email)} in ${esc(code)}</span><select data-assign-email="${esc(member.email)}" data-assign-project="${esc(code)}" ${saving ? "disabled" : ""}>${options(member)}</select>${saving === member.email ? `<small class="quiet">Saving</small>` : ""}</label></li>`;
+    }).join("")}</ul>` : `<p>No team members hold a working grant yet. Grant access first, then assign project roles here.</p>`}
+    <p class="quiet">Changes save as soon as you pick a role and apply only to ${esc(code || "this project")}. Administrators manage access and do not take a working role. Practice roles stay in the practice project.</p>
+  </div>`;
+}
+
+export function drawStart({ actor, items, projectName, practice, canPractice, signedIn, roleSource = "default", defaultRole = "", roster = null, rosterProject = "", rosterSaving = "" }) {
   if (!signedIn) return `<section class="pane start-next"><p class="kicker">Access required</p><h2>Sign in to open your work</h2><p>Your account needs an administrator-granted role for this environment.</p><a class="primary sign-in-action" href="/">Open sign-in page</a></section>`;
   const plan = workPlan(actor, items);
   const preparing = items.filter((item) => item.status === "Open" || item.status === "Returned").length;
@@ -38,7 +112,13 @@ export function drawStart({ actor, items, projectName, practice, canPractice, si
   const approved = items.filter((item) => item.status === "Approved").length;
   const role = ROLE_LABEL[actor.role] || "No granted role";
   const rows = plan.items.slice(0, 5);
-  return `<div class="start-layout">
+  const admin = actor.role === "administrator";
+  const source = practice ? "Practice role. Sample project only."
+    : admin ? "Environment administrator grant."
+    : roleSource === "project" ? `Assigned for this project. Your default role is ${ROLE_LABEL[defaultRole] || defaultRole}.`
+    : "Your default role. An administrator can assign a different role for a project.";
+  const tiles = focusTiles(actor.role, items);
+  return `<div class="start-layout start-${esc(actor.role || "none")}">
     <section class="pane start-next" aria-label="Your next action">
       <p class="kicker">${esc(projectName)}${practice ? " · Practice only" : ""}</p>
       <h2>${esc(plan.title)}</h2>
@@ -46,10 +126,23 @@ export function drawStart({ actor, items, projectName, practice, canPractice, si
       <div class="row-actions"><button type="button" class="primary" data-task="${plan.task}" ${plan.next ? `data-task-code="${esc(plan.next.code)}"` : ""}>${esc(plan.action)}</button><button type="button" data-open="mine">View my work</button></div>
     </section>
     <aside class="pane start-role" aria-label="Current role">
-      <p class="kicker">Your role${practice ? " in this practice" : ""}</p><h2>${esc(role)}</h2>
-      <p>${actor.role === "administrator" ? "Administer access and projects. Preparation and approval belong to the working roles." : actor.role === "nstt" ? "Prepare the facts and recommended action. A different reviewer approves." : "Review assigned records. The preparation fields stay read-only."}</p>
+      <p class="kicker">Your role${practice ? " in this practice" : " in this project"}</p><h2>${esc(role)}</h2>
+      <p>${esc(ROLE_SUMMARY[actor.role] || "Ask an administrator to grant a working role.")}</p>
+      <p class="quiet role-source">${esc(source)}</p>
       <button type="button" class="text-button" data-open="duties">Roles and practice guide</button>
     </aside>
+    ${tiles.length ? `<section class="pane start-focus" aria-label="Your focus">
+      <div class="section-heading"><h2>Your focus</h2></div>
+      <div class="focus-tiles">${tiles.map((tile) => `<button type="button" ${tile.attr}><span>${esc(tile.label)}</span><strong>${tile.value}</strong><small>${esc(tile.note)}</small></button>`).join("")}</div>
+    </section>` : ""}
+    <section class="pane start-actions" aria-label="Quick actions">
+      <div class="section-heading"><h2>Quick actions</h2></div>
+      <div class="row-actions">${quickActions(actor.role)}</div>
+    </section>
+    ${admin && roster && !practice ? `<section class="pane start-roster" aria-label="Quick role assignment">
+      <div class="section-heading"><h2>Quick role assignment</h2><span class="quiet">${(roster.members || []).length} team members</span></div>
+      ${drawRoster(roster, { project: rosterProject, saving: rosterSaving })}
+    </section>` : ""}
     <section class="pane start-progress" aria-label="Project status">
       <div class="section-heading"><h2>Project progress</h2><button type="button" class="text-button" data-open="workflow">View workflow</button></div>
       <div class="progress-stops">
@@ -60,8 +153,8 @@ export function drawStart({ actor, items, projectName, practice, canPractice, si
       <p class="quiet">The decision line uses approved records. Readiness and open-record summaries cover the wider project.</p>
     </section>
     <section class="pane start-work" aria-label="Work waiting on your role">
-      <div class="section-heading"><h2>${actor.role === "administrator" ? "Practice without changing client work" : "Waiting on your role"}</h2></div>
-      ${actor.role === "administrator"
+      <div class="section-heading"><h2>${admin ? "Practice without changing client work" : "Waiting on your role"}</h2></div>
+      ${admin
         ? `<p>Use sample records to walk through preparation, review, and approval. Your administrator grant stays unchanged.</p>${canPractice ? `<div class="row-actions"><button type="button" data-task="practice">Open practice reviews</button></div>` : `<p class="quiet">Practice roles are available only to designated administrators in development.</p>`}`
         : rows.length ? `<div class="start-work-list">${rows.map((item) => `<button type="button" data-task="continue" data-task-code="${esc(item.code)}"><span><strong>${esc(item.code)}</strong> ${esc(item.title)}</span><span class="pill">${esc(item.status)}</span></button>`).join("")}</div>`
           : `<p>No assigned work is waiting. You can still browse the project’s records and outputs.</p>`}

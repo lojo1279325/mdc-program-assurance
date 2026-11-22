@@ -544,6 +544,14 @@ function runRow(run) {
   </details>`;
 }
 
+// The schedule line states what the record shows: a schedule that is arriving, one that is ready and silent, or none.
+export function scheduleText(state) {
+  const fallback = "The workbench runs a catch-up check when it is opened after 20 hours, and any role can choose Check now.";
+  if (state?.scheduled) return `A scheduled check runs every day.${state.lastScheduledAt ? ` The last scheduled check ran on ${dateText(state.lastScheduledAt)}.` : ""}`;
+  if (state?.scheduleReady) return `The scheduled check is ready in this environment. No scheduled check has arrived in the last 36 hours. Ask an administrator to confirm that the scheduler is running. ${fallback}`;
+  return `This environment has no scheduled check. ${fallback}`;
+}
+
 export function drawWatch(ctx) {
   const { watch, catalog, loading, error, role, ui, digest, running } = ctx;
   if (error) return `<section class="pane"><p class="block">${esc(error)}</p><div class="row-actions"><button type="button" data-guide-reload="watch">Try again</button></div></section>`;
@@ -577,7 +585,7 @@ export function drawWatch(ctx) {
     <div class="section-heading"><h2>Daily update</h2><div class="row-actions"><button type="button" class="primary" data-watch-run ${running || watch.state.running ? "disabled" : ""}>${running || watch.state.running ? "Check running" : "Check now"}</button><button type="button" data-watch-download>Download the update</button></div></div>
     <p class="digest-headline ${digest.action ? "action" : ""}">${esc(digest.headline)}</p>
     <ul class="digest">${digest.bullets.map(row => `<li class="digest-${esc(row.kind)}">${esc(row.text)}</li>`).join("")}</ul>
-    <p class="quiet">${last ? `Last check: ${esc(dateText(last))}.` : "No check has run yet."} ${watch.state.scheduled ? "A scheduled check runs every day." : "This environment has no scheduled check. The workbench runs a catch-up check when it is opened after 20 hours, and any role can choose Check now."} Every check is logged with the sources it read. Items are never deleted.</p>
+    <p class="quiet">${last ? `Last check: ${esc(dateText(last))}.` : "No check has run yet."} ${esc(scheduleText(watch.state))} Every check is logged with the sources it read. Items are never deleted.</p>
   </section>
   <div class="watch-toolbar">
     <div class="status-filters" role="group" aria-label="Watch sections">${tabs.map(([id, label]) => `<button type="button" data-watch-tab="${id}" aria-pressed="${tab === id}">${esc(label)}</button>`).join("")}</div>

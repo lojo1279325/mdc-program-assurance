@@ -575,7 +575,7 @@ test("practice entries, field changes, and watch readings stay apart from the MD
 test("a watch check is recorded with its sources, new items appear once, and repeat checks are limited", async (t) => {
   const { request, ok } = await harness(t);
   const empty = ok(await request("nstt", "/api/watch?project=MDC"));
-  assert.deepEqual(empty.state, { lastRunAt: "", lastTrigger: "", runs: 0, running: false, scheduled: false });
+  assert.deepEqual(empty.state, { lastRunAt: "", lastTrigger: "", runs: 0, running: false, scheduled: false, scheduleReady: false, lastScheduledAt: "" });
   assert.deepEqual([empty.runs, empty.items, empty.reviews], [[], [], []]);
   assert.equal(empty.sources.length, 20);
   assert.deepEqual(empty.notConnected.map(row => row.id), ["mofcom", "fcc-page", "ferc", "nerc"]);
@@ -674,21 +674,134 @@ test("a watch item is read by the role that owns its topic, and a material readi
 });
 
 test("the scheduled check runs only with the shared secret and is recorded as a system run", async (t) => {
-  const { request, ok, refused } = await harness(t);
+  const { store, request, ok, refused } = await harness(t);
+  const schedule = async () => { const { scheduled, scheduleReady, lastScheduledAt } = ok(await request("nstt", "/api/watch?project=MDC")).state; return [scheduled, scheduleReady, lastScheduledAt]; };
   delete process.env.CRON_SECRET;
   refused(await request("", "/api/watch/cron"), 503, "The scheduled check is not configured.");
+  assert.deepEqual(await schedule(), [false, false, ""]);
   process.env.CRON_SECRET = "synthetic-cron-secret";
   t.after(() => { delete process.env.CRON_SECRET; });
   refused(await request("", "/api/watch/cron"), 401, "The scheduled check was refused.");
   refused(await request("", "/api/watch/cron", null, { Authorization: "Bearer wrong-secret-value-000" }), 401, "The scheduled check was refused.");
   refused(await request("administrator", "/api/watch/cron"), 401, "The scheduled check was refused.");
   refused(await request("", "/api/watch/cron", null, { Authorization: "synthetic-cron-secret" }), 401, "The scheduled check was refused.");
+  // The secret alone makes the schedule ready. It is active once a scheduled check arrives.
+  assert.deepEqual(await schedule(), [false, true, ""]);
   assert.deepEqual(ok(await request("", "/api/watch/cron", null, { Authorization: "Bearer synthetic-cron-secret" })), { status: "ran", added: 3, screeningChanged: ok(await request("nstt", "/api/watch?project=MDC")).runs[0].screening.changed.length });
   const watch = ok(await request("nstt", "/api/watch?project=MDC"));
   assert.deepEqual([watch.state.lastTrigger, watch.state.runs, watch.runs[0].role, watch.runs[0].trigger], ["scheduled", 1, "system", "scheduled"]);
-  // The schedule is reported as active only on production with the secret set.
-  assert.equal(watch.state.scheduled, false);
+  // A scheduled check that arrived shows that a schedule works in this environment.
+  assert.deepEqual(await schedule(), [true, true, watch.runs[0].at]);
   noEmail(watch);
+
+  // The schedule stops counting as active when no scheduled check has arrived for 36 hours, or when the secret is removed.
+  const state = await store.readGuideDocument("development", "watch-state", "state");
+  const stale = new Date(Date.now() - 37 * 60 * 60 * 1000).toISOString();
+  await store.saveGuideDocument({ environment: "development", projectId: "*watch", kind: "watch-state", key: "state", expectedVersion: state.version, savedBy: "system", payload: { ...state.payload, lastScheduledAt: stale } });
+  assert.deepEqual(await schedule(), [false, true, stale]);
+  delete process.env.CRON_SECRET;
+  assert.deepEqual(await schedule(), [false, false, stale]);
+});
+
+// ---------- Project roles ----------
+
+// A second project, and the way an administrator assigns a working role in it.
+async function withProjectRoles({ request, ok }) {
+  ok(await request("administrator", "/api/projects", { code: "QA", name: "Synthetic QA project" }));
+  return async (email, role, projectId = "QA") => {
+    const version = ok(await request("administrator", "/api/access/project-roles")).rosters[projectId].version;
+    return request("administrator", "/api/access/project-roles", { projectId, email, role, version });
+  };
+}
+const QA = { projectId: "QA" };
+
+test("the plan, the gates, and the sourcing lines follow the role held in the project named in the request", async (t) => {
+  const h = await harness(t);
+  const { request, ok, refused, saveBasis, gate, line } = h;
+  const assign = await withProjectRoles(h);
+  // In the QA project the default preparer reviews as CPI, and the default reviewer prepares as NSTT.
+  ok(await assign(users.nstt, "cpi"));
+  ok(await assign(users.cpi, "nstt"));
+  assert.deepEqual(ok(await request("nstt", "/api/session")).projectRoles, { QA: "cpi" });
+
+  // MDC has no assignment, so each person keeps the environment role there.
+  ok(await saveBasis("nstt"));
+  refused(await saveBasis("cpi", 1), 403, "Only the NSTT role prepares the program plan.");
+  ok(await gate("nstt", { gate: 0, action: "ready", version: 0, evidence: held(3), openItems: [] }));
+  refused(await gate("nstt", { gate: 0, action: "decide", version: 1, result: "Passed", signoffRef: "Owner memo 2026-014" }), 403, "Only the CPI role records the decision for this gate.");
+  refused(await line("cpi", { action: "save", line: gensetLine() }), 403, "Only the NSTT role prepares sourcing lines.");
+
+  // QA: the plan and the gate evidence belong to the person who holds NSTT there.
+  refused(await saveBasis("nstt", 0, {}, 1, "QA"), 403, "Only the NSTT role prepares the program plan.");
+  const plan = ok(await saveBasis("cpi", 0, {}, 1, "QA")).program;
+  assert.deepEqual(plan.payload.log.map(row => row.role), ["nstt"]);
+  refused(await gate("nstt", { ...QA, gate: 0, action: "ready", version: 0, evidence: held(3), openItems: [] }), 403, "Only the NSTT role prepares gate evidence.");
+  ok(await gate("cpi", { ...QA, gate: 0, action: "ready", version: 0, evidence: held(3), openItems: [] }));
+  refused(await gate("cpi", { ...QA, gate: 0, action: "decide", version: 1, result: "Passed", signoffRef: "Owner memo 2026-021" }), 403, "Only the CPI role records the decision for this gate.");
+  const decided = ok(await gate("nstt", { ...QA, gate: 0, action: "decide", version: 1, result: "Passed", signoffRef: "Owner memo 2026-021" })).gate;
+  assert.deepEqual([decided.payload.status, decided.payload.decision.role], ["Passed", "cpi"]);
+  assert.deepEqual(decided.payload.log.map(row => [row.role, row.action]), [["nstt", "ready"], ["cpi", "decide"]]);
+  noEmail(decided);
+
+  // QA: a sourcing line is prepared and reviewed under the same project roles.
+  refused(await line("nstt", { ...QA, action: "save", line: gensetLine() }), 403, "Only the NSTT role prepares sourcing lines.");
+  ok(await line("cpi", { ...QA, action: "save", line: gensetLine() }), 201);
+  const submitted = ok(await line("cpi", { ...QA, action: "submit", id: "L-01", version: 1 })).selection;
+  assert.deepEqual([submitted.payload.status, submitted.payload.reviewerRole], ["In review", "cpi"]);
+  refused(await line("cpi", { ...QA, action: "approve", id: "L-01", version: 2 }), 403, "Only the CPI role reviews this line.");
+
+  // The person who prepared the line does not review it after the assignment is removed.
+  assert.deepEqual(ok(await assign(users.cpi, "")).roster.assignments, { [users.nstt]: "cpi" });
+  refused(await line("cpi", { ...QA, action: "approve", id: "L-01", version: 2 }), 403, "The person who prepared the line cannot review it.");
+  const approved = ok(await line("nstt", { ...QA, action: "approve", id: "L-01", version: 2 })).selection;
+  assert.deepEqual([approved.payload.status, approved.payload.decision.role, approved.payload.preparedByYou], ["Approved", "cpi", false]);
+  assert.deepEqual(approved.payload.log.map(row => [row.role, row.action]), [["nstt", "save"], ["nstt", "submit"], ["cpi", "approve"]]);
+
+  // An administrator reads every project and takes no working role in any of them.
+  refused(await assign(users.administrator, "nstt"), 403, "Administrators manage access and do not take a working role.");
+  refused(await saveBasis("administrator", 1, { region: "EU" }, 1, "QA"), 403, "Only the NSTT role prepares the program plan.");
+  refused(await line("administrator", { ...QA, action: "reopen", id: "L-01", version: 3, note: "An administrator does not reopen a line." }), 403, "Only the NSTT role or the reviewing role reopens this line.");
+  const rows = ok(await request("administrator", "/api/portfolio")).rows;
+  assert.deepEqual(rows.filter(row => ["MDC", "QA"].includes(row.projectId)).map(row => [row.projectId, row.gatesPassed, row.coverage.approvedLines]), [["MDC", 0, 0], ["QA", 1, 1]]);
+});
+
+test("the shared repository and the regulatory watch use the role held in the project that is open", async (t) => {
+  const h = await harness(t);
+  const { request, ok, refused, field, entry, analyze, review } = h;
+  const assign = await withProjectRoles(h);
+  ok(await assign(users.nstt, "cpi"));
+
+  // The same person is refused under the MDC role and accepted under the QA role. The entry is one shared record.
+  const confirm = { kind: "vendor", id: "caterpillar", action: "confirm", field: "hqCountry", version: 0 };
+  refused(await field("nstt", confirm), 403, "Only the CPI role confirms or changes this field: Headquarters country.");
+  const confirmed = ok(await field("nstt", { ...QA, ...confirm })).document;
+  assert.deepEqual([confirmed.version, confirmed.payload.fields.hqCountry.state, confirmed.payload.fields.hqCountry.role, confirmed.payload.log[0].role], [1, "confirmed", "cpi", "cpi"]);
+  const shared = ok(await request("trade", "/api/catalog?project=MDC")).documents.find(doc => doc.key === "caterpillar");
+  assert.deepEqual([shared.version, shared.payload.fields.hqCountry.state], [1, "confirmed"]);
+
+  // Adding an entry is NSTT work. The QA role refuses it, and the MDC role still allows it.
+  refused(await entry("nstt", { ...QA, kind: "vendor", legalName: "Synthetic Controls GmbH" }), 403, "Only the NSTT role adds a vendor or a part to the repository.");
+  ok(await entry("nstt", { kind: "vendor", legalName: "Synthetic Controls GmbH" }), 201);
+  // The analysis is open to the three working roles, so it runs under either role and names the role it ran under.
+  const analyzed = ok(await analyze("nstt", { ...QA, kind: "vendor", id: "caterpillar", version: 1 })).document;
+  assert.equal(analyzed.payload.analysis.role, "cpi");
+
+  // A check asked for from the QA project is recorded under the QA role, and a reading follows the same rule.
+  assert.equal(ok(await request("nstt", "/api/watch/run", { ...QA, trigger: "manual" })).status, "ran");
+  const watch = ok(await request("nstt", "/api/watch?project=QA"));
+  assert.deepEqual([watch.runs[0].trigger, watch.runs[0].role], ["manual", "cpi"]);
+  const advisory = watch.items.find(row => row.sourceId === "cisa-ics");
+  const reading = { itemId: advisory.id, topics: advisory.topics, materiality: "Not material", note: "The advisory covers a product outside the program scope", version: 0 };
+  refused(await review("nstt", reading), 403, "Only the CPI role records materiality for Control system security advisories.");
+  const read = ok(await review("nstt", { ...QA, ...reading }));
+  assert.deepEqual(read.review.payload.log.map(row => [row.role, row.materiality]), [["cpi", "Not material"]]);
+  noEmail(read);
+
+  // A person with no assignment in QA keeps the environment role there.
+  const rule = watch.items.find(row => row.sourceId === "fr-bis");
+  const tradeReading = { itemId: rule.id, topics: rule.topics, materiality: "Not material", note: "The rule covers items outside the program scope", version: 0 };
+  refused(await review("nstt", { ...QA, ...tradeReading }), 403, "Only the Trade role records materiality for US chip export rules.");
+  ok(await review("trade", { ...QA, ...tradeReading }));
 });
 
 // ---------- Storage ----------

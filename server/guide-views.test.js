@@ -9,7 +9,7 @@ import { syntheticNetwork, syntheticSeed } from "./guide-fixtures.js";
 import { CATALOG_SEED } from "../public/catalog-seed.js";
 import { WATCH_TOPICS, benchmark, mergeCatalog, programDay } from "../public/catalog-model.js";
 import { designContext, lineRecheck } from "../public/guide-model.js";
-import { dailyDigest, dateText, digestText, drawRepository, drawWatch, fieldQueue, watchQueue } from "../public/catalogview.js";
+import { dailyDigest, dateText, digestText, drawRepository, drawWatch, fieldQueue, scheduleText, watchQueue } from "../public/catalogview.js";
 import { drawPortfolio, drawProgram, drawSourcing } from "../public/guideview.js";
 import { GUIDE_TITLES, GUIDE_VIEWS } from "../public/guidecontrol.js";
 import { drawQuickGuide } from "../public/experience.js";
@@ -542,6 +542,31 @@ test("the regulatory watch gives each role its own decisions and shows the check
   assert.deepEqual(tabs(after.watchLog()).slice(0, 3), ["For my decision (1) *", "All items (3)", "Decisions recorded (1)"]);
   assert.equal(after.digest.action, true);
   assert.equal(after.digest.bullets.some(row => row.kind === "material" && row.text.startsWith("The Trade role recorded “Synthetic test rule on advanced computing items and remote access” as material. It flags 1 vendor and ")), true);
+});
+
+test("the watch says whether a scheduled check is arriving, is ready and silent, or is absent", async (t) => {
+  const fallback = "The workbench runs a catch-up check when it is opened after 20 hours, and any role can choose Check now.";
+  const silent = `The scheduled check is ready in this environment. No scheduled check has arrived in the last 36 hours. Ask an administrator to confirm that the scheduler is running. ${fallback}`;
+  const stamp = "2026-11-22T11:00:04.000Z";
+  assert.equal(scheduleText({ scheduled: false, scheduleReady: false, lastScheduledAt: "" }), `This environment has no scheduled check. ${fallback}`);
+  assert.equal(scheduleText({ scheduled: false, scheduleReady: true, lastScheduledAt: stamp }), silent);
+  assert.equal(scheduleText({ scheduled: true, scheduleReady: true, lastScheduledAt: "" }), "A scheduled check runs every day.");
+  assert.equal(scheduleText({ scheduled: true, scheduleReady: true, lastScheduledAt: stamp }), `A scheduled check runs every day. The last scheduled check ran on ${dateText(stamp)}.`);
+  assert.equal(scheduleText(undefined), `This environment has no scheduled check. ${fallback}`);
+
+  // The development screen follows the record: no schedule, then a ready schedule, then one that has arrived.
+  const bench = await workbench(t);
+  delete process.env.CRON_SECRET;
+  t.after(() => { delete process.env.CRON_SECRET; });
+  assert.equal(has((await bench.open("trade")).watchLog(), `No check has run yet. This environment has no scheduled check. ${fallback}`), true);
+  process.env.CRON_SECRET = "synthetic-cron-secret";
+  assert.equal(has((await bench.open("trade")).watchLog(), `No check has run yet. ${silent}`), true);
+  bench.ok(await bench.request("", "/api/watch/cron", null, { Authorization: "Bearer synthetic-cron-secret" }));
+  const after = await bench.open("trade");
+  assert.equal(after.watch.state.lastScheduledAt, after.watch.runs[0].at);
+  assert.equal(has(after.watchLog(), `A scheduled check runs every day. The last scheduled check ran on ${dateText(after.watch.runs[0].at)}.`), true);
+  assert.equal(has(after.watchLog(), "This environment has no scheduled check."), false);
+  assert.equal(has(after.watchLog({ watchTab: "runs" }), "Scheduled daily check · Scheduled check"), true);
 });
 
 test("the portfolio compares the projects a role can open and marks the one that is open", async (t) => {

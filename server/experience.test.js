@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { workPlan, drawStart, drawRecordPath, drawQuickGuide } from "../public/experience.js";
+import { workPlan, drawStart, drawRoster, drawRecordPath, drawQuickGuide } from "../public/experience.js";
 import { drawWizard } from "../public/wizard.js";
 import { drawPresentation } from "../public/present.js";
 import { decisionBrief } from "../public/brief.js";
@@ -77,4 +77,51 @@ test("quick guide follows the current role and keeps practice explicit", () => {
   assert.match(review, /cannot approve your own preparation/);
   const presentation = drawQuickGuide({ view: "present", role: "trade", projectName: "MDC" });
   assert.match(presentation, /Download PowerPoint keeps the same layouts/);
+});
+
+test("start page tailors focus and quick actions to each role", () => {
+  const items = [
+    { code: "Q-01", title: "Returned item", status: "Returned", ownerRole: "nstt", reviewerRole: "cpi" },
+    { code: "Q-02", title: "In CPI review", status: "In review", ownerRole: "nstt", reviewerRole: "cpi", reassessment: { pendingCount: 1 } },
+    { code: "Q-03", title: "Trade item", status: "In review", ownerRole: "nstt", reviewerRole: "cpi", tradeSensitive: true },
+    { code: "Q-04", title: "Held", status: "Approved", ownerRole: "nstt", reviewerRole: "cpi", reassessment: { materialCount: 1 } },
+  ];
+  const base = { items, projectName: "Synthetic", practice: false, canPractice: false, signedIn: true };
+  const nstt = drawStart({ ...base, actor: { role: "nstt" } });
+  assert.match(nstt, /Returned to you<\/span><strong>1</);
+  assert.match(nstt, /Reassessment holds<\/span><strong>1</);
+  assert.match(nstt, /data-task="new"[^>]*>New analysis/);
+  assert.match(nstt, /Your default role/);
+  const cpi = drawStart({ ...base, actor: { role: "cpi" }, roleSource: "project", defaultRole: "trade" });
+  assert.match(cpi, /Waiting for your review<\/span><strong>2</);
+  assert.match(cpi, /Events to classify<\/span><strong>1</);
+  assert.match(cpi, /Assigned for this project\. Your default role is Trade/);
+  assert.doesNotMatch(cpi, /New analysis/);
+  const trade = drawStart({ ...base, actor: { role: "trade" } });
+  assert.match(trade, /Trade-sensitive records<\/span><strong>1</);
+  const admin = drawStart({ ...base, actor: { role: "administrator" }, roster: null });
+  assert.doesNotMatch(admin, /Your focus/);
+  assert.doesNotMatch(admin, /Quick role assignment/);
+  assert.match(admin, /Manage access grants/);
+});
+
+test("quick role assignment lists members per project and escapes content", () => {
+  const roster = {
+    projects: [{ code: "MDC", name: "MDC Program Assurance" }, { code: "QA", name: "<b>Synthetic</b>" }],
+    members: [{ email: "qa-one@blackengtech.com", role: "cpi" }, { email: "x\"<i>@blackengtech.com", role: "nstt" }],
+    rosters: { MDC: { version: 0, assignments: {} }, QA: { version: 2, assignments: { "qa-one@blackengtech.com": "nstt" } } },
+  };
+  const markup = drawRoster(roster, { project: "QA" });
+  assert.match(markup, /<option value="QA" selected>/);
+  assert.match(markup, /Assigned NSTT in QA/);
+  assert.match(markup, /<option value="nstt" selected>/);
+  assert.match(markup, /Default \(CPI\)/);
+  assert.doesNotMatch(markup, /<b>Synthetic|<i>/);
+  assert.doesNotMatch(markup, /PRACTICE|value="administrator"/);
+  assert.match(markup, /do not take a working role/);
+  assert.match(drawRoster(roster, { project: "NOPE" }), /<option value="MDC" selected>/);
+  assert.match(drawRoster(roster, { project: "QA", saving: "qa-one@blackengtech.com" }), /disabled/);
+  const home = drawStart({ actor: { role: "administrator" }, items: [], projectName: "MDC", practice: false, canPractice: true, signedIn: true, roster, rosterProject: "QA" });
+  assert.match(home, /Quick role assignment/);
+  assert.match(home, /2 team members/);
 });

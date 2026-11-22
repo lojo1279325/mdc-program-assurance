@@ -179,7 +179,7 @@ export function createGuide({ state, main, render, setNotice, leaveForm, goTo, p
   // The server runs the daily check when none ran in the last 20 hours. Nothing happens otherwise.
   async function catchUp() {
     try {
-      const response = await fetch("/api/watch/run", { method: "POST", credentials: "include", headers: practiceHeaders(), body: JSON.stringify({ trigger: "catch-up" }) });
+      const response = await fetch("/api/watch/run", { method: "POST", credentials: "include", headers: practiceHeaders(), body: JSON.stringify({ projectId: state.project, trigger: "catch-up" }) });
       const body = await response.json().catch(() => ({}));
       if (!response.ok || body.status !== "ran") return;
       await Promise.all([load("watch"), load("catalog")]);
@@ -298,7 +298,7 @@ export function createGuide({ state, main, render, setNotice, leaveForm, goTo, p
     setNotice("The check is running. It reads each source and screens the vendor names. This can take up to a minute.");
     refresh();
     try {
-      const response = await fetch("/api/watch/run", { method: "POST", credentials: "include", headers: practiceHeaders(), body: JSON.stringify({ trigger: "manual" }) });
+      const response = await fetch("/api/watch/run", { method: "POST", credentials: "include", headers: practiceHeaders(), body: JSON.stringify({ projectId: state.project, trigger: "manual" }) });
       const body = await response.json().catch(() => ({}));
       if (g.scope !== scope) return;
       if (!response.ok) { setNotice(body.message || "The check did not finish."); return; }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { NOT_CONNECTED, SYSTEM_ACTOR, WATCH_PARTITION, WATCH_SOURCES, flattenRuns, rssItems, runWatch, shapeItem } from "./watch.js";
+import { NOT_CONNECTED, SYSTEM_ACTOR, WATCH_PARTITION, WATCH_SOURCES, flattenRuns, rssItems, runWatch, scheduleState, shapeItem } from "./watch.js";
 import { clearScreeningCache } from "./analysis.js";
 import { guideMemory } from "./guide-store.js";
 import { syntheticNetwork, syntheticSeed } from "./guide-fixtures.js";
@@ -201,6 +201,39 @@ test("a check that follows another too closely does not run, and a running check
   assert.deepEqual(await run({ now: later }), { status: "busy", message: "A check is already running. Reload in a minute to see its result." });
   assert.equal((await run({ now: later + 2 * 60 * 1000 })).status, "ran");
   assert.equal((await read("watch-state", "state")).payload.lock, null);
+});
+
+test("a schedule counts as active while scheduled checks arrive, and a check by a person does not stand in for one", async () => {
+  const { run, read } = setup();
+  const HOUR = 60 * 60 * 1000;
+  const at = (hours) => new Date(NOW + hours * HOUR).toISOString();
+  const state = (environment, configured, lastScheduledAt, now = NOW) => scheduleState({ environment, configured, lastScheduledAt, now });
+
+  // Without the shared secret nothing can call the scheduled route, in any environment.
+  assert.deepEqual(state("development", false, ""), { scheduled: false, scheduleReady: false, lastScheduledAt: "" });
+  assert.deepEqual(state("production", false, at(-1)), { scheduled: false, scheduleReady: false, lastScheduledAt: at(-1) });
+  // The host calls the route on production, so production counts as scheduled before the first check is due.
+  assert.deepEqual(state("production", true, ""), { scheduled: true, scheduleReady: true, lastScheduledAt: "" });
+  // Any other environment needs an outside scheduler, so it counts only once a scheduled check has arrived.
+  assert.deepEqual(state("development", true, ""), { scheduled: false, scheduleReady: true, lastScheduledAt: "" });
+  assert.deepEqual(state("development", true, "not a date"), { scheduled: false, scheduleReady: true, lastScheduledAt: "" });
+  assert.equal(state("development", true, at(-35)).scheduled, true);
+  assert.equal(state("test", true, at(-35)).scheduled, true);
+  // A schedule that has been silent for 36 hours is reported as silent, on production as well.
+  assert.equal(state("development", true, at(-36)).scheduled, false);
+  assert.equal(state("production", true, at(-36)).scheduled, false);
+
+  // Only a scheduled check records the time. A manual check and a catch-up check keep the earlier time.
+  await run({ trigger: "manual", actor: TRADE });
+  assert.equal((await read("watch-state", "state")).payload.lastScheduledAt, undefined);
+  await run({ now: NOW + HOUR });
+  assert.equal((await read("watch-state", "state")).payload.lastScheduledAt, at(1));
+  await run({ trigger: "manual", actor: TRADE, now: NOW + 2 * HOUR });
+  await run({ trigger: "catch-up", now: NOW + 30 * HOUR });
+  const saved = (await read("watch-state", "state")).payload;
+  assert.deepEqual([saved.lastTrigger, saved.runs, saved.lastScheduledAt], ["catch-up", 4, at(1)]);
+  assert.equal(state("development", true, saved.lastScheduledAt, NOW + 30 * HOUR).scheduled, true);
+  assert.equal(state("development", true, saved.lastScheduledAt, NOW + 38 * HOUR).scheduled, false);
 });
 
 test("two checks that start together run once", async () => {

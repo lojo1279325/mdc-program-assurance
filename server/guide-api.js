@@ -20,7 +20,7 @@ import { PRACTICE_PROJECT, practiceActor, practiceRoleFrom } from "./practice.js
 import { analyzeEntry, dayOf, hostOf, inverterAuto, longDate, screeningAuto, tierForUrl } from "./analysis.js";
 import {
   CATALOG_PARTITION, NOT_CONNECTED, PRACTICE_CATALOG_PARTITION, PRACTICE_WATCH_PARTITION, SYSTEM_ACTOR, WATCH_PARTITION,
-  WATCH_SOURCES, flattenRuns, runWatch,
+  WATCH_SOURCES, flattenRuns, runWatch, scheduleState,
 } from "./watch.js";
 
 const PROJECT_KINDS = ["guide-program", "guide-gate", "guide-selection"];
@@ -122,7 +122,9 @@ const overlayPayload = (doc) => {
 
 export function registerGuideRoutes(app, { store, grantedActor, fetchImpl = (...args) => fetch(...args) }) {
   async function context(req, res, projectId) {
-    const actor = await grantedActor(req);
+    // The caller resolves the working role for this project. The repository and the watch are shared by every project,
+    // so a change there is recorded under the role the person holds in the project that is open.
+    const actor = await grantedActor(req, projectId);
     if (actor.error) { res.status(actor.error).json({ message: actor.message }); return null; }
     const requestedRole = practiceRoleFrom(req.get("x-practice-role"));
     const acting = requestedRole ? practiceActor({
@@ -583,7 +585,7 @@ export function registerGuideRoutes(app, { store, grantedActor, fetchImpl = (...
       state: {
         lastRunAt: state.lastRunAt || "", lastTrigger: state.lastTrigger || "", runs: Number(state.runs) || 0,
         running: Boolean(state.lock?.until && Date.parse(state.lock.until) > Date.now()),
-        scheduled: environment === "production" && Boolean(process.env.CRON_SECRET),
+        ...scheduleState({ environment, configured: Boolean(process.env.CRON_SECRET), lastScheduledAt: state.lastScheduledAt }),
       },
       runs: flat.runs.slice(0, 40).map(withoutBy),
       items: flat.items,
@@ -594,9 +596,10 @@ export function registerGuideRoutes(app, { store, grantedActor, fetchImpl = (...
     });
   });
 
-  // Any granted role may ask for a check. The run is recorded under the signed-in role, never a practice role.
+  // Any granted role may ask for a check. The run is recorded under the working role in the project that is open,
+  // or under the environment role when no project is named. It is never recorded under a practice role.
   app.post("/api/watch/run", async (req, res) => {
-    const actor = await grantedActor(req);
+    const actor = await grantedActor(req, req.body?.projectId ? cleanProjectId(req.body.projectId) : undefined);
     if (actor.error) { res.status(actor.error).json({ message: actor.message }); return; }
     const result = await runWatch({
       store, environment: actor.environment, trigger: req.body?.trigger === "catch-up" ? "catch-up" : "manual",

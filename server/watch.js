@@ -253,12 +253,30 @@ export async function runWatch({ store, environment, trigger = "manual", actor =
     await save("watch-run", runKey(nowIso), run, 0);
     await save("watch-seen", "seen", { ids: Object.fromEntries(kept) }, seenDoc?.version || 0);
     if (screened.value) await save("watch-screening", "screening", { at: screened.value.at, listDate: screened.value.listDate, values: screened.value.values, practice: screened.value.practice }, screeningDoc?.version || 0);
-    await saveState({ ...state, lock: null, lastRunAt: nowIso, lastRunKey: runKey(nowIso), lastTrigger: trigger, ecfr, runs: (Number(state.runs) || 0) + 1 }, locked.version);
+    await saveState({
+      ...state, lock: null, lastRunAt: nowIso, lastRunKey: runKey(nowIso), lastTrigger: trigger, ecfr, runs: (Number(state.runs) || 0) + 1,
+      ...(trigger === "scheduled" ? { lastScheduledAt: nowIso } : {}),
+    }, locked.version);
     return { status: "ran", run };
   } catch (error) {
     await saveState({ ...state, lock: null }, locked.version).catch(() => null);
     throw error;
   }
+}
+
+// Whether a daily schedule is working in this environment. The host calls the scheduled route on production only.
+// Any other environment needs an outside scheduler that calls the same route with the shared secret. The schedule is
+// reported as active while scheduled checks keep arriving, and on production before the first one is due.
+export const SCHEDULE_WINDOW_HOURS = 36;
+export function scheduleState({ environment, configured, lastScheduledAt = "", now = Date.now() }) {
+  const last = Date.parse(lastScheduledAt);
+  const known = !Number.isNaN(last);
+  const arriving = known && now - last < SCHEDULE_WINDOW_HOURS * 60 * 60 * 1000;
+  return {
+    scheduled: Boolean(configured) && (arriving || (environment === "production" && !known)),
+    scheduleReady: Boolean(configured),
+    lastScheduledAt: known ? String(lastScheduledAt) : "",
+  };
 }
 
 // Newest runs first. Items are flattened across runs, with one row per item.
