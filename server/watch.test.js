@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { NOT_CONNECTED, SYSTEM_ACTOR, WATCH_PARTITION, WATCH_SOURCES, flattenRuns, rssItems, runWatch, scheduleState, shapeItem } from "./watch.js";
+import { NOT_CONNECTED, SYSTEM_ACTOR, WATCH_PARTITION, WATCH_SOURCES, flattenRuns, itemFromReview, logItems, rssItems, runWatch, scheduleState, shapeItem } from "./watch.js";
 import { clearScreeningCache } from "./analysis.js";
 import { guideMemory } from "./guide-store.js";
 import { syntheticNetwork, syntheticSeed } from "./guide-fixtures.js";
@@ -324,6 +324,23 @@ test("a vendor that joins the screening list is reported with its earlier result
   assert.equal((await run({ now: NOW + 2 * DAY })).run.screening.changed.length, 0);
 });
 
+test("a check logs the lists behind the earlier result, and a change in the list records alone is still logged", async () => {
+  const { net, run } = setup();
+  const first = (await run()).run;
+  // The first check compares with the seed, which holds no list names. Those rows carry the earlier detail only.
+  assert.equal(first.screening.changed.length > 0, true);
+  assert.equal(first.screening.changed.every(row => !("fromLists" in row)), true);
+  const entity = { name: "Caterpillar Inc.", alt_names: [], source: "Entity List (EL) - Bureau of Industry and Security", source_list_url: "https://www.bis.gov/entity-list", type: "Entity" };
+  net.state.screening.push(entity);
+  const listed = (await run({ now: NOW + DAY })).run.screening.changed;
+  assert.deepEqual(listed.map(row => [row.id, row.from, row.to, row.fromLists]), [["caterpillar", "No match", "Match", []], ["solar-turbines", "No match", "Match", []]]);
+  // The same name joins a second list. The value stays Match, and the change is logged with the list the earlier result rested on.
+  net.state.screening.push({ ...entity, source: "Military End User (MEU) List - Bureau of Industry and Security" });
+  const moved = (await run({ now: NOW + 2 * DAY })).run.screening.changed;
+  assert.deepEqual(moved.map(row => [row.id, row.from, row.to, row.fromLists]), [["caterpillar", "Match", "Match", ["Entity List (EL)"]], ["solar-turbines", "Match", "Match", ["Entity List (EL)"]]]);
+  assert.equal((await run({ now: NOW + 3 * DAY })).run.screening.changed.length, 0);
+});
+
 test("a feed item older than the look-back window is left out", async () => {
   const { net, run } = setup();
   net.state.federalRegister[0].row.publication_date = dayBefore(11);
@@ -348,4 +365,44 @@ test("the run log lists the newest run first, shows each item once, and leaves t
   assert.deepEqual(all.runs, [{ key: "run-2", at: "T2", added: 1 }, { key: "run-1", at: "T1", added: 2 }]);
   assert.deepEqual(all.items.map(item => [item.id, item.foundAt]), [["c", "T2"], ["a", "T2"], ["b", "T1"]]);
   assert.deepEqual(flattenRuns(docs, 2).items.map(item => item.id), ["c", "a"]);
+});
+
+test("the log holds the newest items and every older item that carries a decision", () => {
+  const item = (id, foundAt, extra = {}) => ({ id, sourceId: "fr-bis", sourceLabel: "Federal Register: Bureau of Industry and Security rules", tier: 1, lead: false, title: `Synthetic item ${id}`, url: `https://www.federalregister.gov/d/${id}`, date: "2026-11-20", summary: `Summary of ${id}.`, topics: ["chips"], vendors: [], publisher: "", foundAt, ...extra });
+  const docs = [
+    { key: "run-1", payload: { at: "T1", items: [item("old-decided", "T1"), item("old-open", "T1")] } },
+    { key: "run-2", payload: { at: "T2", items: [item("new-1", "T2"), item("new-2", "T2")] } },
+  ];
+  const decision = (role, topics) => ({ role, materiality: "Not material", topics, vendors: [], note: "The rule covers items outside the program scope.", at: "T3" });
+  const reviews = [
+    { key: "old-decided", payload: { itemId: "old-decided", title: "Synthetic item old-decided", dispositions: { trade: decision("trade", ["chips"]) } } },
+    // A record that holds no decision adds nothing.
+    { key: "old-open", payload: { itemId: "old-open", title: "Synthetic item old-open", dispositions: {} } },
+    // An item that is already in the newest items is listed once.
+    { key: "new-2", payload: { itemId: "new-2", title: "Synthetic item new-2", dispositions: { trade: decision("trade", ["chips"]) } } },
+  ];
+  assert.deepEqual(logItems([], []), { items: [], runs: [] });
+  assert.deepEqual(logItems(docs, []).items.map(row => row.id), ["new-1", "new-2", "old-decided", "old-open"]);
+  const log = logItems(docs, reviews, 2);
+  assert.deepEqual(log.items.map(row => row.id), ["new-1", "new-2", "old-decided"]);
+  // The older item is the item as the run recorded it.
+  assert.deepEqual(log.items[2], item("old-decided", "T1"));
+  assert.deepEqual(log.runs.map(row => row.key), ["run-2", "run-1"]);
+
+  // The run that found an item is no longer among the runs that were read. The decision record holds the item.
+  const gone = item("gone", "T0", { topics: ["chips", "ics"], vendors: ["caterpillar"], publisher: "Federal Register", summary: "A rule on advanced computing items." });
+  const kept = { key: "practice:gone", payload: {
+    itemId: "gone", title: gone.title, url: gone.url, sourceLabel: gone.sourceLabel, tier: 1, lead: false, date: gone.date,
+    summary: gone.summary, publisher: gone.publisher, sourceId: gone.sourceId, foundAt: gone.foundAt, itemTopics: gone.topics, itemVendors: gone.vendors,
+    dispositions: { trade: decision("trade", ["chips", "entity-list"]) },
+  } };
+  assert.deepEqual(itemFromReview(kept.payload), gone);
+  assert.deepEqual(logItems(docs, [kept], 2).items.map(row => row.id), ["new-1", "new-2", "gone"]);
+  assert.deepEqual(logItems(docs, [kept], 2).items[2], gone);
+  // The older items follow the newest ones, and they stay in order of the newest find.
+  assert.deepEqual(logItems(docs, [kept, ...reviews], 2).items.map(row => row.id), ["new-1", "new-2", "old-decided", "gone"]);
+  // A decision recorded before the item was kept with it still names the item, its source, and the topics that were decided.
+  const { summary, publisher, sourceId, foundAt, itemTopics, itemVendors, ...early } = kept.payload;
+  const both = { ...early, dispositions: { trade: decision("trade", ["chips", "entity-list"]), cpi: decision("cpi", ["ics", "chips"]) } };
+  assert.deepEqual(itemFromReview(both), { ...gone, sourceId: "", summary: "", publisher: "", foundAt: "", vendors: [], topics: ["chips", "entity-list", "ics"] });
 });

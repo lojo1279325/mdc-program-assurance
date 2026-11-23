@@ -48,7 +48,7 @@ test("the daily update says so when no check has run and nothing changed", () =>
     { kind: "items", text: "No new item arrived in the last 24 hours." },
     { kind: "screening", text: "No vendor screening result changed." },
   ]);
-  assert.deepEqual(digest.counts, { runs: 0, newItems: 0, leads: 0, screeningChanges: 0, postureChanges: 0, material: 0, awaiting: { trade: 0, cpi: 0 }, rechecks: { vendors: 0, parts: 0 }, lines: 0 });
+  assert.deepEqual(digest.counts, { runs: 0, newItems: 0, leads: 0, screeningChanges: 0, recordChanges: 0, postureChanges: 0, material: 0, awaiting: { trade: 0, cpi: 0 }, rechecks: { vendors: 0, parts: 0 }, lines: 0 });
   assert.equal(digestText(digest), "Daily regulatory and sourcing update, Nov 22, 2026\n\nNo change needs action today.\n\n- No check has run yet. Choose Check now to read the sources.\n- No new item arrived in the last 24 hours.\n- No vendor screening result changed.\n");
 });
 
@@ -75,7 +75,7 @@ test("a changed screening result is reported with the sources read, the postures
   assert.equal(bullet(digest, "posture"), "The changed screening results move the indicated posture of 5 parts for MDC: Synthetic Power Corp SYN-US-GEN (from Yellow to Orange); Synthetic Power Corp SYN-US-50 (from Yellow to Orange); Synthetic Power Corp SYN-US-GPU (from Yellow to Orange); Synthetic Power Corp SYN-US-CABLE (from Green to Orange); Synthetic Power Corp SYN-US-BESS (from Yellow to Orange). The benchmark and the ranked alternates already use the new results.");
   assert.equal(bullet(digest, "review"), "Items waiting for a materiality decision: Trade 3, CPI 1.");
   assert.deepEqual(digest.postures.map(row => [row.id, row.from, row.to]), POWER_PARTS.map(id => [id, posture(before, id), "Orange"]));
-  assert.deepEqual(digest.counts, { runs: 1, newItems: 3, leads: 1, screeningChanges: 1, postureChanges: 5, material: 0, awaiting: { trade: 3, cpi: 1 }, rechecks: { vendors: 0, parts: 0 }, lines: 0 });
+  assert.deepEqual(digest.counts, { runs: 1, newItems: 3, leads: 1, screeningChanges: 1, recordChanges: 0, postureChanges: 5, material: 0, awaiting: { trade: 3, cpi: 1 }, rechecks: { vendors: 0, parts: 0 }, lines: 0 });
   // The same update with no project name leaves the name out.
   assert.match(bullet(digestOf({ watch: { runs: [run], items, reviews: [] }, catalog: after }), "posture"), /^The changed screening results move the indicated posture of 5 parts: Synthetic Power Corp SYN-US-GEN /);
 });
@@ -90,6 +90,113 @@ test("a screening value recorded by Trade stands until Trade rechecks it", () =>
   assert.equal(bullet(digest, "screening"), "The screening result changed for Synthetic Power Corp (from No match to Match). Trade confirms each one before it is relied on.");
   assert.equal(bullet(digest, "recheck"), "1 vendor carries an open recheck in the repository.");
   assert.deepEqual([digest.postures, digest.counts.postureChanges, digest.action], [[], 0, true]);
+});
+
+test("the daily update benchmarks an earlier result on the lists that the earlier result named", () => {
+  // Trade confirmed a match. A later check finds the vendor on no list, so the parts are benchmarked again.
+  const confirmedMatch = { kind: "catalog-vendor", key: "syn-us", version: 1, payload: { fields: { screening: { state: "confirmed", baseline: "Match", role: "trade", at: at(30) } } } };
+  const cleared = { "vendor:syn-us": { screening: { value: "No match", source: CSL, tier: 1, asOf: "2026-11-22", detail: "No name match.", lists: [], checkedAt: at(2), signature: "sig-2", changedAt: at(2), changedFrom: "Match" } } };
+  const catalog = mergeCatalog(syntheticSeed(), [confirmedMatch], { auto: cleared });
+  const field = catalog.vendors.find(row => row.id === "syn-us").fields.screening;
+  assert.deepEqual([field.value, field.state, field.stale, field.lists], ["No match", "confirmed", true, []]);
+  const now = POWER_PARTS.map(id => benchmark(catalog.parts.find(part => part.id === id), catalog, CONTEXT).posture);
+  assert.deepEqual(now, ["Yellow", "Yellow", "Yellow", "Green", "Yellow"]);
+  const moves = (runs, used = catalog) => digestOf({ watch: { runs, items: [], reviews: [] }, catalog: used }).postures.map(row => [row.id, row.from, row.to]);
+  const from = (posture) => POWER_PARTS.map((id, index) => [id, posture, now[index]]);
+  const blocking = ["Specially Designated Nationals (SDN)", "Entity List (EL)"];
+  const short = "Name match on Capta List (CAP) (Synthetic Power Corp); Denied Persons List (DPL) (Synthetic Power Corp)";
+
+  // The earlier result named the list that blocks dealings. The detail kept in the check log is cut short and does not name it.
+  assert.deepEqual(moves([check(2, [{ ...change("Match", "No match"), fromDetail: short, fromLists: blocking }])]), from("Red"));
+  // The list names of the earlier result decide, and the lists of the current result do not.
+  assert.deepEqual(moves([check(2, [{ ...change("Match", "No match"), fromDetail: short, fromLists: ["Entity List (EL)"] }])]), from("Orange"));
+  // A check logged before list names were kept is read from its detail.
+  assert.deepEqual(moves([check(2, [{ ...change("Match", "No match"), fromDetail: "Name match on Specially Designated Nationals (SDN) (Synthetic Power Corp)." }])]), from("Red"));
+  assert.deepEqual(moves([check(2, [{ ...change("Match", "No match"), fromDetail: short }])]), from("Orange"));
+  // Two steps inside the day are benchmarked from the first result.
+  const steps = [check(1, [{ ...change("Similar name", "No match"), fromDetail: "A similar name is listed.", fromLists: [] }]), check(5, [{ ...change("Match", "Similar name"), fromDetail: short, fromLists: blocking }])];
+  assert.deepEqual(moves(steps), from("Red"));
+  // A match that Trade had not confirmed was a finding for Trade, whatever list it named.
+  const open = mergeCatalog(syntheticSeed(), [], { auto: cleared });
+  assert.deepEqual(moves([check(2, [{ ...change("Match", "No match"), fromDetail: short, fromLists: blocking }])], open), from("Orange"));
+});
+
+test("a change in the list records behind an unchanged result is stated in the update and in the check log", () => {
+  const moved = { "vendor:syn-us": { screening: { value: "Match", source: CSL, tier: 1, asOf: "2026-11-22", detail: "Name match on Entity List (EL) (Synthetic Power Corp); Military End User (MEU) List (Synthetic Power Corp).", lists: ["Entity List (EL)", "Military End User (MEU) List"], checkedAt: at(2), signature: "sig-2", changedAt: at(2), changedFrom: "Match" } } };
+  const catalog = mergeCatalog(syntheticSeed(), [], { auto: moved });
+  const records = { ...change("Match", "Match"), fromDetail: "Name match on Entity List (EL) (Synthetic Power Corp).", fromLists: ["Entity List (EL)"] };
+  const watch = { state: { lastRunAt: at(2) }, runs: [check(2, [records, { id: "syn-de", name: "Synthetic Controls GmbH", from: "No match", to: "Similar name" }])], items: [], reviews: [], sources: [], notConnected: [] };
+  const digest = digestOf({ watch, catalog });
+  assert.deepEqual(kinds(digest), ["check", "items", "screening", "recheck"]);
+  assert.equal(bullet(digest, "screening"), "The screening result changed for Synthetic Controls GmbH (from No match to Similar name). The list records behind the result changed for Synthetic Power Corp (still Match). Trade confirms each one before it is relied on.");
+  assert.equal(bullet(digest, "recheck"), "1 vendor carries an open recheck in the repository.");
+  assert.deepEqual([digest.counts.screeningChanges, digest.counts.recordChanges, digest.postures, digest.action], [1, 1, [], true]);
+  // The records changed and nothing else did.
+  const only = digestOf({ watch: { ...watch, runs: [check(2, [records])] }, catalog });
+  assert.equal(bullet(only, "screening"), "The list records behind the result changed for Synthetic Power Corp (still Match). Trade confirms each one before it is relied on.");
+  assert.deepEqual([only.counts.screeningChanges, only.counts.recordChanges, only.action], [0, 1, true]);
+  // A change in the records can move a posture. Trade had confirmed a match on the list that blocks dealings, and the vendor has since left that list.
+  const confirmedMatch = { kind: "catalog-vendor", key: "syn-us", version: 1, payload: { fields: { screening: { state: "confirmed", baseline: "Match", role: "trade", at: at(30) } } } };
+  const narrowed = { "vendor:syn-us": { screening: { ...moved["vendor:syn-us"].screening, detail: "Name match on Entity List (EL) (Synthetic Power Corp).", lists: ["Entity List (EL)"] } } };
+  const left = digestOf({ watch: { ...watch, runs: [check(2, [{ ...records, fromLists: ["Specially Designated Nationals (SDN)", "Entity List (EL)"] }])] }, catalog: mergeCatalog(syntheticSeed(), [confirmedMatch], { auto: narrowed }) });
+  assert.deepEqual(left.postures.map(row => [row.id, row.from, row.to]), POWER_PARTS.map(id => [id, "Red", "Orange"]));
+  assert.deepEqual([left.counts.screeningChanges, left.counts.recordChanges, left.counts.postureChanges], [0, 1, 5]);
+  // A result that changed and changed back inside the day is not a change in the records.
+  const reversed = digestOf({ watch: { ...watch, runs: [check(1, [change("No match", "Match")]), check(5, [change("Match", "No match")])] }, catalog: mergeCatalog(syntheticSeed(), []) });
+  assert.deepEqual([bullet(reversed, "screening"), reversed.counts.recordChanges], ["No vendor screening result changed.", 0]);
+
+  const log = drawWatch({ watch, catalog, loading: false, error: "", role: "trade", ui: { ...UI, watchTab: "runs" }, digest, running: false });
+  assert.equal(has(log, "<li>Synthetic Power Corp: the list records behind the result changed. The value is still Match.</li>"), true);
+  assert.equal(has(log, "<li>Synthetic Controls GmbH: from No match to Similar name.</li>"), true);
+  assert.equal(has(log, "from Match to Match"), false);
+  const rechecks = plain(drawWatch({ watch, catalog, loading: false, error: "", role: "trade", ui: { ...UI, watchTab: "rechecks" }, digest, running: false }));
+  assert.equal(rechecks.includes("Screening list result is still Match, and the list records behind it changed. Trade has not confirmed it since. (Trade)"), true);
+});
+
+test("a long watch list is shown a page at a time, and every item can be reached", () => {
+  const id = (index) => `item-${String(index).padStart(3, "0")}`;
+  // 150 items, newest first. Every third item is an advisory for CPI. Trade has decided each of the other 100.
+  const items = Array.from({ length: 150 }, (_, index) => found(id(index), [index % 3 === 0 ? "ics" : "chips"], 2 + index));
+  const decision = { role: "trade", materiality: "Not material", topics: ["chips"], vendors: [], note: "The rule covers items outside the program scope.", at: at(1), affected: { vendors: [], parts: [] } };
+  const reviews = items.filter(item => item.topics.includes("chips")).map(item => ({ itemId: item.id, version: 1, payload: { itemId: item.id, title: item.title, dispositions: { trade: decision } } }));
+  const watch = { state: { lastRunAt: at(2) }, runs: [check(2)], items, reviews, sources: [], notConnected: [] };
+  const catalog = mergeCatalog(syntheticSeed(), []);
+  const digest = digestOf({ watch, catalog });
+  const draw = (role, ui = {}) => drawWatch({ watch, catalog, loading: false, error: "", role, ui: { ...UI, ...ui }, digest, running: false });
+  const shown = (markup) => [...markup.matchAll(/>Synthetic item (item-\d+)</g)].map(match => match[1]);
+  const more = (markup) => [...markup.matchAll(/<button type="button" class="ghost" data-watch-more="next">([^<]+)<\/button>/g)].map(match => match[1]);
+
+  // The first page holds the 60 newest items and says how many there are.
+  const first = draw("nstt", { watchTab: "all" });
+  assert.deepEqual([shown(first).length, shown(first)[0], shown(first).at(-1)], [60, id(0), id(59)]);
+  assert.equal(has(first, "Showing 60 of 150 items, newest first."), true);
+  assert.deepEqual(more(first), ["Show 60 more"]);
+  const second = draw("nstt", { watchTab: "all", watchShown: 120 });
+  assert.deepEqual([shown(second).length, shown(second).at(-1)], [120, id(119)]);
+  assert.equal(has(second, "Showing 120 of 150 items, newest first."), true);
+  assert.deepEqual(more(second), ["Show 30 more"]);
+  const whole = draw("nstt", { watchTab: "all", watchShown: 180 });
+  assert.deepEqual([shown(whole).length, shown(whole).at(-1), more(whole)], [150, id(149), []]);
+  assert.equal(has(whole, "All 150 items are shown."), true);
+
+  // Every recorded decision can be read, and the role that recorded it can open it to change it.
+  const decided = draw("trade", { watchTab: "decided" });
+  assert.equal(has(decided, "Decisions recorded (100)"), true);
+  assert.deepEqual([shown(decided).length, more(decided)], [60, ["Show 40 more"]]);
+  assert.equal(has(decided, "Showing 60 of 100 items, newest first."), true);
+  const oldest = draw("trade", { watchTab: "decided", watchShown: 120, watchItem: id(149) });
+  assert.deepEqual([shown(oldest).length, shown(oldest).at(-1), more(oldest)], [100, id(149), []]);
+  assert.equal(count(oldest, /class="watch-review-form/g), 1);
+  assert.equal(has(oldest, `<form class="watch-review-form form" data-item="${id(149)}" data-version="1">`), true);
+
+  // The count follows the topic filter. A list that fits on one page carries no paging line.
+  const advisories = draw("cpi", { watchTab: "mine", watchTopic: "ics" });
+  assert.deepEqual([shown(advisories).length, more(advisories)], [50, []]);
+  assert.equal(/Showing \d+ of|items are shown/.test(advisories), false);
+  const chips = draw("nstt", { watchTab: "all", watchTopic: "chips" });
+  assert.equal(has(chips, "Showing 60 of 100 items, newest first."), true);
+  // A page size that is not a usable number falls back to the first page.
+  for (const value of [0, -60, "abc", null]) assert.equal(shown(draw("nstt", { watchTab: "all", watchShown: value })).length, 60, String(value));
 });
 
 test("the daily update covers the last 24 hours and reports the net change", () => {
@@ -141,7 +248,7 @@ test("material decisions, open rechecks, and flagged sourcing lines call for act
   assert.equal(bullet(digest, "review"), "Items waiting for a materiality decision: Trade 2.");
   assert.equal(bullet(digest, "recheck"), "1 vendor and 2 parts carry an open recheck in the repository.");
   assert.equal(bullet(digest, "lines"), "2 sourcing lines in MDC need a second look: L-01 (A watch item flags the primary part for recheck); L-03 (The benchmark moved from Yellow to Orange since the line was approved). Approved decisions stay as recorded until a role reopens them.");
-  assert.deepEqual(digest.counts, { runs: 1, newItems: 3, leads: 1, screeningChanges: 0, postureChanges: 0, material: 1, awaiting: { trade: 2, cpi: 0 }, rechecks: { vendors: 1, parts: 2 }, lines: 2 });
+  assert.deepEqual(digest.counts, { runs: 1, newItems: 3, leads: 1, screeningChanges: 0, recordChanges: 0, postureChanges: 0, material: 1, awaiting: { trade: 2, cpi: 0 }, rechecks: { vendors: 1, parts: 2 }, lines: 2 });
   const file = digestText(digest);
   assert.equal(file.startsWith("Daily regulatory and sourcing update, Nov 22, 2026\n\nAction is needed on the items below.\n\n- The last check ran "), true);
   assert.equal(file.split("\n").filter(row => row.startsWith("- ")).length, 7);

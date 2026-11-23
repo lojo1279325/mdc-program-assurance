@@ -268,8 +268,10 @@ export function createApp({ store = defaultStore, fetchImpl } = {}) {
     const existing = parseReview((await store.listItems(actor.environment)).find((row) => row.code === code));
     const homeProject = cleanProjectId(existing?.projectId || req.body?.projectId);
     const projectRole = await roleIn(actor, homeProject);
-    if (existing && req.body?.projectId && cleanProjectId(req.body.projectId) !== homeProject
-      && await roleIn(actor, req.body.projectId) !== projectRole) {
+    // The record is filed under the project the saved copy names. A missing or
+    // unreadable project is filed under MDC, so the role is checked there too.
+    const targetProject = cleanProjectId(req.body?.projectId);
+    if (existing && targetProject !== homeProject && await roleIn(actor, targetProject) !== projectRole) {
       res.status(403).json({ message: "Your role differs in the target project. Ask an administrator to align your project roles first." });
       return;
     }
@@ -519,7 +521,13 @@ export function createApp({ store = defaultStore, fetchImpl } = {}) {
     if (current?.riskAssessment && !["Open", "Returned"].includes(current.status)) {
       res.status(403).json({ message: "Return this risk-assessed record before restoring a version." }); return;
     }
-    const restoreRole = await roleIn(actor, current?.projectId || restored.projectId);
+    const restoreProject = cleanProjectId(current?.projectId || restored.projectId);
+    const restoreRole = await roleIn(actor, restoreProject);
+    // A version saved in another project would carry the record back there.
+    if (restored.projectId !== restoreProject && await roleIn(actor, restored.projectId) !== restoreRole) {
+      res.status(403).json({ message: "Your role differs in the project this version belongs to. Ask an administrator to align your project roles first." });
+      return;
+    }
     const privilege = restorePrivilege(restoreRole, restored, current);
     if (privilege) {
       res.status(403).json({ message: privilege });

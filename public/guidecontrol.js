@@ -4,7 +4,7 @@
 import { CATALOG_SEED } from "./catalog-seed.js";
 import { mergeCatalog, vendorOf } from "./catalog-model.js";
 import { GATES, designContext, lineRecheck } from "./guide-model.js";
-import { dailyDigest, digestText, drawRepository, drawRepositoryList, drawWatch, esc, plural, roleName } from "./catalogview.js";
+import { WATCH_PAGE, dailyDigest, digestText, drawRepository, drawRepositoryList, drawWatch, esc, plural, roleName } from "./catalogview.js";
 import {
   drawBasisPreview, drawPortfolio, drawProgram, drawSourcing, readBasisForm, readGateForm, readProgramSection, readSelectionForm,
 } from "./guideview.js";
@@ -35,13 +35,13 @@ const SECTION_FORMS = {
   "risks-form": ["risks", "The risk register is saved."],
   "milestones-form": ["milestones", "The milestones are saved. The timeline and the portfolio now show them."],
 };
-const FOCUS_KEYS = ["id", "name", "data-repo-entry", "data-line", "data-gate", "data-program-tab", "data-watch-tab", "data-repo-kind-switch", "data-field-edit", "data-watch-item", "data-portfolio-open"];
+const FOCUS_KEYS = ["id", "name", "data-repo-entry", "data-line", "data-gate", "data-program-tab", "data-watch-tab", "data-repo-kind-switch", "data-field-edit", "data-watch-item", "data-watch-more", "data-portfolio-open"];
 const HOUR = 60 * 60 * 1000;
 
 const freshUi = () => ({
   programTab: "basis", gate: null, basisDraft: null, line: "", lineDraft: null, newSubsystem: "",
   repoKind: "vendors", repoQuery: "", repoSubsystem: "", repoFilter: "", repoEntry: "", repoField: "", repoAdd: "",
-  watchTab: "", watchTopic: "", watchItem: "",
+  watchTab: "", watchTopic: "", watchItem: "", watchShown: WATCH_PAGE,
 });
 
 export function createGuide({ state, main, render, setNotice, leaveForm, goTo, practiceHeaders, actingRole, downloadFile, openProject }) {
@@ -67,7 +67,7 @@ export function createGuide({ state, main, render, setNotice, leaveForm, goTo, p
     if (g.scope === scope) return;
     g.scope = scope;
     Object.assign(g, { plan: null, raw: null, catalog: null, watch: null, portfolio: null, loading: {}, error: {}, loadedAt: {}, analyzing: "", running: false });
-    Object.assign(ui, { gate: null, basisDraft: null, line: "", lineDraft: null, newSubsystem: "", repoField: "", repoAdd: "", watchItem: "" });
+    Object.assign(ui, { gate: null, basisDraft: null, line: "", lineDraft: null, newSubsystem: "", repoField: "", repoAdd: "", watchItem: "", watchShown: WATCH_PAGE });
   }
 
   // ---------- Loading ----------
@@ -634,12 +634,21 @@ export function createGuide({ state, main, render, setNotice, leaveForm, goTo, p
       downloadFile(digestText(digest), `mdc-daily-update-${digest.day}.txt`, "text/plain;charset=utf-8");
       setNotice("The daily update is downloaded as a text file.");
     });
-    on("[data-watch-tab]", "click", (_, button) => leaveForm(() => { ui.watchTab = button.dataset.watchTab; ui.watchItem = ""; redraw(); }));
+    // A new section or a new topic starts again from the first page.
+    on("[data-watch-tab]", "click", (_, button) => leaveForm(() => { ui.watchTab = button.dataset.watchTab; ui.watchItem = ""; ui.watchShown = WATCH_PAGE; redraw(); }));
     on("#watch-topic", "change", (_, select) => {
       const next = select.value;
       select.value = ui.watchTopic;
-      leaveForm(() => { ui.watchTopic = next; redraw(); });
+      leaveForm(() => { ui.watchTopic = next; ui.watchShown = WATCH_PAGE; redraw(); });
     });
+    on("[data-watch-more]", "click", () => leaveForm(() => {
+      const before = main.querySelectorAll(".watch-panel .watch-item").length;
+      ui.watchShown = (Number.isInteger(ui.watchShown) && ui.watchShown >= WATCH_PAGE ? ui.watchShown : WATCH_PAGE) + WATCH_PAGE;
+      redraw();
+      // The reader continues from the first item that was added.
+      const added = main.querySelectorAll(".watch-panel .watch-item")[before];
+      if (added) { added.setAttribute("tabindex", "-1"); added.focus({ preventScroll: true }); }
+    }));
     on("[data-watch-item]", "click", (_, button) => leaveForm(() => { ui.watchItem = button.dataset.watchItem; redraw(); }));
     on("form.watch-review-form", "submit", async (event, formElement) => {
       event.preventDefault();

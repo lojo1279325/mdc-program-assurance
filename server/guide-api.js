@@ -20,7 +20,7 @@ import { PRACTICE_PROJECT, practiceActor, practiceRoleFrom } from "./practice.js
 import { analyzeEntry, dayOf, hostOf, inverterAuto, longDate, screeningAuto, tierForUrl } from "./analysis.js";
 import {
   CATALOG_PARTITION, NOT_CONNECTED, PRACTICE_CATALOG_PARTITION, PRACTICE_WATCH_PARTITION, SYSTEM_ACTOR, WATCH_PARTITION,
-  WATCH_SOURCES, flattenRuns, runWatch, scheduleState,
+  WATCH_SOURCES, flattenRuns, itemFromReview, logItems, runWatch, scheduleState,
 } from "./watch.js";
 
 const PROJECT_KINDS = ["guide-program", "guide-gate", "guide-selection"];
@@ -578,7 +578,8 @@ export function registerGuideRoutes(app, { store, grantedActor, fetchImpl = (...
       store.listGuideDocuments(environment, practice ? PRACTICE_WATCH_PARTITION : WATCH_PARTITION, { kinds: ["watch-review"] }),
       store.readGuideDocument(environment, "watch-screening", "screening"),
     ]);
-    const flat = flattenRuns(runDocs, 200);
+    // The newest items, and every older item that carries a decision, so a decision can always be read and corrected.
+    const flat = logItems(runDocs, reviewDocs, 200);
     const state = stateDoc?.payload || {};
     res.json({
       practice,
@@ -634,7 +635,8 @@ export function registerGuideRoutes(app, { store, grantedActor, fetchImpl = (...
       store.listGuideDocuments(environment, WATCH_PARTITION, { kinds: ["watch-run"], limit: 60 }),
       store.readGuideDocument(environment, "watch-review", key),
     ]);
-    const item = flattenRuns(runDocs, 5000).items.find(row => row.id === itemId) || (doc ? doc.payload : null);
+    // An item that has left the recent checks is read from the decision record that was kept with it.
+    const item = flattenRuns(runDocs, Infinity).items.find(row => row.id === itemId) || (doc ? itemFromReview(doc.payload) : null);
     if (!itemId || !item) { notFound(res, "This item was not found in the watch log."); return; }
     const topics = [...new Set((Array.isArray(req.body?.topics) ? req.body.topics : []).map(id => clean(id, 40)))].filter(id => topicOf(id));
     if (!topics.length) { refuse(res, "Choose at least one rule topic for this item."); return; }
@@ -660,7 +662,11 @@ export function registerGuideRoutes(app, { store, grantedActor, fetchImpl = (...
       environment, projectId: practice ? PRACTICE_WATCH_PARTITION : WATCH_PARTITION, kind: "watch-review", key,
       expectedVersion: safeVersion(req.body?.version), savedBy: acting.email,
       payload: {
-        itemId, title: clean(item.title, 240), url: safeUrl(item.url), sourceLabel: clean(item.sourceLabel, 160), tier: item.tier, lead: Boolean(item.lead), date: clean(item.date, 20),
+        itemId, title: clean(item.title, 300), url: safeUrl(item.url), sourceLabel: clean(item.sourceLabel, 160), tier: item.tier, lead: Boolean(item.lead), date: clean(item.date, 20),
+        // The item is kept whole with its decision, so the decision stays readable after the item leaves the recent checks.
+        summary: clean(item.summary, 500), publisher: clean(item.publisher, 160), sourceId: clean(item.sourceId, 60), foundAt: clean(item.foundAt, 40),
+        itemTopics: (Array.isArray(item.topics) ? item.topics : []).map(id => clean(id, 40)).filter(id => topicOf(id)).slice(0, 20),
+        itemVendors: (Array.isArray(item.vendors) ? item.vendors : []).map(id => clean(id, 80)).filter(Boolean).slice(0, 40),
         dispositions: { ...(earlier.dispositions || {}), [acting.role]: { materiality, topics, vendors, broad, note: closed(note), confirmUrl, affected, by: acting.email, role: acting.role, at: now } },
         log: [...(Array.isArray(earlier.log) ? earlier.log : []), { at: now, by: acting.email, role: acting.role, materiality, topics, note: closed(note), vendors: affected.vendors.length, parts: affected.parts.length }].slice(-60),
       },

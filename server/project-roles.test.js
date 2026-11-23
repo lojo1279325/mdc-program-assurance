@@ -123,3 +123,69 @@ test("a project role controls review, import, and the administrator grant is unt
   assert.equal((await h.request("administrator", "/api/session")).body.role, "administrator");
   assert.deepEqual((await h.request("administrator", "/api/session")).body.projectRoles, {});
 });
+
+test("omitting or clearing the project on save cannot move a record into a project where the role differs", async t => {
+  const h = await harness(t);
+  // The CPI user is assigned NSTT in QA only and stays CPI in MDC.
+  assert.equal((await h.assign(users.cpi, "nstt")).status, 200);
+  const live = async code => (await h.request("cpi", "/api/workbench")).body.items.find(item => item.code === code);
+  const inQa = await h.request("cpi", "/api/workbench/items", syntheticRecord({ code: "Q-51" }));
+  assert.equal(inQa.status, 200, JSON.stringify(inQa.body));
+
+  // A save without a project would otherwise be filed under MDC.
+  for (const projectId of [undefined, "", null, "not a code", "MDC"]) {
+    const moved = await h.request("cpi", "/api/workbench/items", { ...inQa.body, title: "Synthetic move attempt", projectId });
+    assert.equal(moved.status, 403, `A save with projectId ${JSON.stringify(projectId)} was accepted.`);
+    assert.match(moved.body.message, /role differs in the target project/);
+  }
+  const kept = await live("Q-51");
+  assert.equal(kept.projectId, "QA");
+  assert.equal(kept.version, inQa.body.version);
+  assert.equal(kept.title, inQa.body.title);
+
+  // The same person still saves the record inside QA.
+  const edited = await h.request("cpi", "/api/workbench/items", { ...inQa.body, title: "Synthetic QA edit" });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  assert.equal(edited.body.projectId, "QA");
+
+  // A person who holds one role in both projects can still move a record.
+  let record = await h.request("nstt", "/api/workbench/items", syntheticRecord({ code: "Q-53" }));
+  assert.equal(record.status, 200, JSON.stringify(record.body));
+  record = await h.request("nstt", "/api/workbench/items", { ...record.body, projectId: "MDC" });
+  assert.equal(record.status, 200, JSON.stringify(record.body));
+  assert.equal(record.body.projectId, "MDC");
+});
+
+test("restoring a version from another project is refused when the role differs there", async t => {
+  const h = await harness(t);
+  assert.equal((await h.assign(users.cpi, "nstt")).status, 200);
+  const live = async code => (await h.request("cpi", "/api/workbench")).body.items.find(item => item.code === code);
+
+  // The NSTT user holds one role in both projects, starts the record in MDC, and moves it to QA.
+  let record = await h.request("nstt", "/api/workbench/items", syntheticRecord({ code: "Q-52", projectId: "MDC" }));
+  assert.equal(record.status, 200, JSON.stringify(record.body));
+  record = await h.request("nstt", "/api/workbench/items", { ...record.body, projectId: "QA" });
+  assert.equal(record.status, 200, JSON.stringify(record.body));
+  assert.equal(record.body.projectId, "QA");
+
+  // The CPI user prepares in QA only. Restoring the MDC version would write the record back into MDC.
+  const refused = await h.request("cpi", "/api/workbench/versions/restore", { code: "Q-52", version: 1 });
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.match(refused.body.message, /role differs/);
+  const kept = await live("Q-52");
+  assert.equal(kept.projectId, "QA");
+  assert.equal(kept.version, 2);
+
+  // A version from the same project is still restored by the preparing role in that project.
+  const edited = await h.request("cpi", "/api/workbench/items", { ...record.body, title: "Synthetic QA edit" });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  const sameProject = await h.request("cpi", "/api/workbench/versions/restore", { code: "Q-52", version: 2 });
+  assert.equal(sameProject.status, 200, JSON.stringify(sameProject.body));
+  assert.equal(sameProject.body.projectId, "QA");
+  assert.equal(sameProject.body.title, record.body.title);
+
+  // A person who holds one role in both projects can still restore across them.
+  const allowed = await h.request("nstt", "/api/workbench/versions/restore", { code: "Q-52", version: 1 });
+  assert.equal(allowed.status, 200, JSON.stringify(allowed.body));
+  assert.equal(allowed.body.projectId, "MDC");
+});

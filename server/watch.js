@@ -155,8 +155,15 @@ async function rescreen({ vendors, practiceVendors, previous, overlays, fetchImp
   const check = (vendor, prior) => {
     const fresh = screenVendor(loaded.index, entityNames(vendor), now);
     const record = screeningRecord(prior, fresh, vendor.fields?.screening?.baselineValue, nowIso);
-    // The earlier detail is kept so the log can state what the earlier result rested on.
-    if (record.changedAt === nowIso) changed.push({ id: vendor.id, name: vendor.name, from: record.changedFrom, to: record.value, fromDetail: clean(prior?.detail ?? vendor.fields?.screening?.detail, 300) });
+    // The earlier detail and the earlier list names are kept, so the log can state what the earlier result rested on.
+    // The list names come from the same record as the earlier value. A record kept without them adds none.
+    if (record.changedAt === nowIso) {
+      const lists = prior ? prior.lists : vendor.fields?.screening?.lists;
+      changed.push({
+        id: vendor.id, name: vendor.name, from: record.changedFrom, to: record.value, fromDetail: clean(prior?.detail ?? vendor.fields?.screening?.detail, 300),
+        ...(Array.isArray(lists) ? { fromLists: lists.map(name => clean(name, 160)).filter(Boolean).slice(0, 40) } : {}),
+      });
+    }
     return record;
   };
   const newest = (a, b) => !a ? b : !b ? a : String(a.checkedAt || "") >= String(b.checkedAt || "") ? a : b;
@@ -279,6 +286,9 @@ export function scheduleState({ environment, configured, lastScheduledAt = "", n
   };
 }
 
+// The newest find first, then government sources before press leads, then the newest date.
+const newestFirst = (a, b) => String(b.foundAt || "").localeCompare(String(a.foundAt || "")) || a.tier - b.tier || String(b.date || "").localeCompare(String(a.date || ""));
+
 // Newest runs first. Items are flattened across runs, with one row per item.
 export function flattenRuns(runDocs, limit = 200) {
   const runs = [...runDocs].sort((a, b) => String(b.payload?.at || "").localeCompare(String(a.payload?.at || "")));
@@ -291,9 +301,39 @@ export function flattenRuns(runDocs, limit = 200) {
       items.push(item);
     }
   }
-  items.sort((a, b) => String(b.foundAt || "").localeCompare(String(a.foundAt || "")) || a.tier - b.tier || String(b.date).localeCompare(String(a.date)));
+  items.sort(newestFirst);
   return {
     items: items.slice(0, limit),
     runs: runs.map(doc => { const { items: omitted, ...rest } = doc.payload || {}; return { key: doc.key, ...rest }; }),
   };
+}
+
+// The item a decision was recorded on, rebuilt from the decision record. A record saved before the item was kept
+// with it still names the item, its source, and the topics that were decided.
+export function itemFromReview(payload = {}) {
+  const decided = [...new Set(Object.values(payload.dispositions || {}).flatMap(row => Array.isArray(row?.topics) ? row.topics : []))];
+  return {
+    id: payload.itemId, sourceId: payload.sourceId || "", sourceLabel: payload.sourceLabel || "", tier: payload.tier, lead: Boolean(payload.lead),
+    title: payload.title || "", url: payload.url || "", date: payload.date || "", summary: payload.summary || "",
+    topics: Array.isArray(payload.itemTopics) && payload.itemTopics.length ? payload.itemTopics : decided,
+    vendors: Array.isArray(payload.itemVendors) ? payload.itemVendors : [],
+    publisher: payload.publisher || "", foundAt: payload.foundAt || "",
+  };
+}
+
+// The log as it is shown: the newest items, then every older item that carries a decision.
+// A recorded decision can always be read and corrected, however many items arrived after it.
+export function logItems(runDocs, reviewDocs = [], limit = 200) {
+  const flat = flattenRuns(runDocs, Infinity);
+  const newest = flat.items.slice(0, limit);
+  const listed = new Set(newest.map(item => item.id));
+  const older = new Map(flat.items.slice(limit).map(item => [item.id, item]));
+  const decided = [];
+  for (const doc of reviewDocs) {
+    const payload = doc?.payload || {};
+    if (!payload.itemId || listed.has(payload.itemId) || !Object.keys(payload.dispositions || {}).length) continue;
+    listed.add(payload.itemId);
+    decided.push(older.get(payload.itemId) || itemFromReview(payload));
+  }
+  return { items: [...newest, ...decided.sort(newestFirst)], runs: flat.runs };
 }

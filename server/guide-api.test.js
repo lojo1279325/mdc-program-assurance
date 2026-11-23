@@ -9,6 +9,7 @@ import { createMemory } from "./store.js";
 import { guideFile, guidePostgres } from "./guide-store.js";
 import { clearScreeningCache, longDate } from "./analysis.js";
 import { agentReply, syntheticNetwork } from "./guide-fixtures.js";
+import { WATCH_PARTITION } from "./watch.js";
 import { CATALOG_SEED } from "../public/catalog-seed.js";
 import { categoryOf, mergeCatalog } from "../public/catalog-model.js";
 import { GATES } from "../public/guide-model.js";
@@ -671,6 +672,42 @@ test("a watch item is read by the role that owns its topic, and a material readi
   const stillOpen = merged.parts.find(row => row.vendor === "siemens" && row.recheck.length);
   ok(await line("nstt", { action: "save", line: { subsystem: categoryOf(stillOpen.category).subsystem, category: stillOpen.category, primary: stillOpen.id, alternate: "" } }), 201);
   assert.equal(ok(await request("nstt", "/api/portfolio")).rows[0].rechecks, 1);
+});
+
+test("a recorded decision stays in the watch log after its item leaves the recent checks, and it can still be corrected", async (t) => {
+  const { store, request, ok, review, catalog } = await harness(t);
+  ok(await request("cpi", "/api/watch/run", { trigger: "manual" }));
+  const first = ok(await request("trade", "/api/watch?project=MDC"));
+  const rule = first.items.find(row => row.sourceId === "fr-bis");
+  assert.equal(first.items.length, 3);
+  ok(await review("trade", { itemId: rule.id, topics: ["chips"], materiality: "Not material", note: "The rule covers items outside the program scope.", version: 0 }));
+
+  // Sixty later checks find nothing new. The check that found the rule is no longer among the checks the log reads.
+  await new Promise(resolve => setTimeout(resolve, 5));
+  const start = Date.parse(first.runs[0].at);
+  for (let index = 1; index <= 60; index += 1) {
+    const at = new Date(start + index * 60 * 60 * 1000).toISOString();
+    await store.saveGuideDocument({
+      environment: "development", projectId: WATCH_PARTITION, kind: "watch-run", key: `run-later-${index}`, expectedVersion: 0, savedBy: "system",
+      payload: { at, trigger: "scheduled", role: "system", since: "", sources: [], screening: { status: "read", checked: 0, changed: [], note: "" }, added: 0, items: [] },
+    });
+  }
+  const later = ok(await request("trade", "/api/watch?project=MDC"));
+  assert.equal(later.runs.some(row => row.at === first.runs[0].at), false);
+  // The decided item is listed as it was found, with its decision.
+  assert.deepEqual(later.items.find(row => row.id === rule.id), rule);
+  assert.equal(later.reviews.find(row => row.itemId === rule.id).payload.dispositions.trade.materiality, "Not material");
+  for (const role of ["nstt", "cpi", "administrator"]) assert.deepEqual(ok(await request(role, "/api/watch?project=MDC")).items.find(row => row.id === rule.id), rule, role);
+
+  // Trade corrects the decision. The correction is saved by version, and the item stays whole.
+  const corrected = ok(await review("trade", { itemId: rule.id, topics: ["chips"], materiality: "Material", note: "The rule changes chip licensing for the program.", version: 1 }));
+  assert.equal(corrected.review.version, 2);
+  assert.equal(corrected.affected.parts.includes("nvidia-vera-rubin-nvl72"), true);
+  assert.deepEqual(corrected.review.payload.log.map(row => row.materiality), ["Not material", "Material"]);
+  const after = ok(await request("trade", "/api/watch?project=MDC"));
+  assert.deepEqual(after.items.find(row => row.id === rule.id), rule);
+  assert.equal((await catalog("nstt")).parts.find(row => row.id === "nvidia-vera-rubin-nvl72").recheck.length, 1);
+  noEmail(after);
 });
 
 test("the scheduled check runs only with the shared secret and is recorded as a system run", async (t) => {

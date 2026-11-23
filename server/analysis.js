@@ -4,7 +4,7 @@
 
 import {
   CITES, REGIONS, categoryOf, clean, safeUrl, isMissing, entityNames, fieldDef, fitCheck, countryName, coreName,
-  buildScreeningIndex, screenNames, screeningDetail, screeningSignature, valueOf, FIELD_ROLE_LABEL, AI_FIELDS, programDay,
+  buildScreeningIndex, listNames, screenNames, screeningDetail, screeningSignature, valueOf, FIELD_ROLE_LABEL, AI_FIELDS, programDay,
 } from "../public/catalog-model.js";
 import { createHash } from "node:crypto";
 import { S1260H_LIST, FCC_LIST, match1260h, matchFccNamed, inverterApprovalsFor } from "./lists.js";
@@ -104,6 +104,8 @@ export function screenVendor(index, names, retrievedAt) {
   return {
     value: result.value,
     detail: `${screeningDetail(result)} ${sentence(`Names checked: ${checked}`)} List data retrieved ${longDate(retrievedAt)}.`,
+    // Every list that holds an exact name match, as data. The benchmark reads this and not the wording of the detail.
+    lists: listNames(result.exact),
     // The full set of list hits can run to hundreds of rows, so a digest of it is stored.
     signature: createHash("sha256").update(screeningSignature(result)).digest("hex").slice(0, 32),
   };
@@ -112,7 +114,7 @@ export function screenVendor(index, names, retrievedAt) {
 // Compares a fresh result with the last recorded one. A change is dated so that an earlier confirmation goes stale.
 // The first check compares the value with the baseline. Later checks compare the full set of list hits.
 export function screeningRecord(previous, fresh, baselineValue, nowIso) {
-  const record = { value: fresh.value, detail: fresh.detail, signature: fresh.signature, checkedAt: nowIso };
+  const record = { value: fresh.value, detail: fresh.detail, ...(Array.isArray(fresh.lists) ? { lists: fresh.lists } : {}), signature: fresh.signature, checkedAt: nowIso };
   if (previous && typeof previous.signature === "string") {
     if (previous.signature !== fresh.signature || previous.value !== fresh.value) return { ...record, changedAt: nowIso, changedFrom: clean(previous.value, 80) };
     return previous.changedAt ? { ...record, changedAt: previous.changedAt, changedFrom: clean(previous.changedFrom, 80) } : record;
@@ -125,6 +127,7 @@ export function screeningRecord(previous, fresh, baselineValue, nowIso) {
 export function screeningAuto(record) {
   return {
     value: record.value, source: CITES.csl, tier: 1, asOf: dayOf(record.checkedAt), detail: record.detail,
+    ...(Array.isArray(record.lists) ? { lists: record.lists } : {}),
     checkedAt: record.checkedAt, signature: record.signature,
     ...(record.changedAt ? { changedAt: record.changedAt, changedFrom: record.changedFrom } : {}),
   };

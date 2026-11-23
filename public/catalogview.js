@@ -405,18 +405,26 @@ export function dailyDigest({ watch = null, catalog = null, lines = [], projectN
   for (const run of [...runs].reverse()) {
     for (const row of run.screening?.changed || []) {
       const first = changed.get(row.id);
-      changed.set(row.id, { id: row.id, name: row.name, from: first?.from ?? row.from, fromDetail: first ? first.fromDetail : row.fromDetail || "", to: row.to });
+      // The earlier result is the one the first change of the day started from. The last change says whether the value moved.
+      changed.set(row.id, {
+        id: row.id, name: row.name, from: first?.from ?? row.from, fromDetail: first ? first.fromDetail : row.fromDetail || "",
+        fromLists: first ? first.fromLists : row.fromLists, to: row.to, records: row.from === row.to,
+      });
     }
   }
   const screening = [...changed.values()].filter(row => row.from !== row.to);
+  // A check can find the same value resting on other list records. The value did not move, and Trade still has a change to confirm.
+  const records = [...changed.values()].filter(row => row.from === row.to && row.records);
   // A changed screening result moves the benchmark at once. Each part is benchmarked with the earlier result and with the current one.
   const postures = [];
-  for (const row of catalog ? screening : []) {
+  for (const row of catalog ? [...screening, ...records] : []) {
     const vendor = catalog.vendors.find(entry => entry.id === row.id);
     const field = vendor?.fields?.screening;
     // A value entered by Trade stands until Trade rechecks it, so the benchmark has not moved.
     if (!field || field.state === "changed") continue;
-    const before = { ...vendor, fields: { ...vendor.fields, screening: { ...field, value: row.from, detail: row.fromDetail, stale: false } } };
+    // The earlier result is benchmarked on the lists it named. The lists of the current result say nothing about it.
+    const { lists: current, ...kept } = field;
+    const before = { ...vendor, fields: { ...vendor.fields, screening: { ...kept, value: row.from, detail: row.fromDetail, stale: false, ...(Array.isArray(row.fromLists) ? { lists: row.fromLists } : {}) } } };
     const earlier = { ...catalog, vendors: catalog.vendors.map(entry => entry === vendor ? before : entry) };
     for (const part of catalog.parts.filter(entry => entry.vendor === vendor.id)) {
       const was = benchmark(part, earlier, context).posture;
@@ -452,8 +460,11 @@ export function dailyDigest({ watch = null, catalog = null, lines = [], projectN
   });
   bullets.push({
     kind: "screening",
-    text: screening.length
-      ? `The screening result changed for ${screening.map(row => `${row.name} (from ${row.from} to ${row.to})`).join("; ")}. Trade confirms each one before it is relied on.`
+    text: screening.length || records.length
+      ? `${[
+        screening.length ? `The screening result changed for ${screening.map(row => `${row.name} (from ${row.from} to ${row.to})`).join("; ")}.` : "",
+        records.length ? `The list records behind the result changed for ${records.map(row => `${row.name} (still ${row.to})`).join("; ")}.` : "",
+      ].filter(Boolean).join(" ")} Trade confirms each one before it is relied on.`
       : "No vendor screening result changed.",
   });
   if (postures.length) bullets.push({
@@ -464,13 +475,13 @@ export function dailyDigest({ watch = null, catalog = null, lines = [], projectN
   if (awaitingRole.trade || awaitingRole.cpi) bullets.push({ kind: "review", text: `Items waiting for a materiality decision: ${[["Trade", awaitingRole.trade], ["CPI", awaitingRole.cpi]].filter(([, count]) => count).map(([name, count]) => `${name} ${count}`).join(", ")}.` });
   if (rechecks.vendors || rechecks.parts) bullets.push({ kind: "recheck", text: `${tally(rechecks.vendors, rechecks.parts)} ${rechecks.vendors + rechecks.parts === 1 ? "carries" : "carry"} an open recheck in the repository.` });
   if (flagged.length) bullets.push({ kind: "lines", text: `${plural(flagged.length, "sourcing line")}${projectName ? ` in ${projectName}` : ""} ${flagged.length === 1 ? "needs" : "need"} a second look: ${flagged.map(line => `${line.id} (${String(line.reasons[0]).replace(/\.$/, "")})`).join("; ")}. Approved decisions stay as recorded until a role reopens them.` });
-  const action = Boolean(screening.length || material.length || awaitingRole.trade || awaitingRole.cpi || rechecks.vendors || rechecks.parts || flagged.length);
+  const action = Boolean(screening.length || records.length || material.length || awaitingRole.trade || awaitingRole.cpi || rechecks.vendors || rechecks.parts || flagged.length);
   return {
     day: programDay(now),
     headline: action ? "Action is needed on the items below." : "No change needs action today.",
     action, bullets,
     postures,
-    counts: { runs: runs.length, newItems: items.length, leads, screeningChanges: screening.length, postureChanges: postures.length, material: material.length, awaiting: awaitingRole, rechecks, lines: flagged.length },
+    counts: { runs: runs.length, newItems: items.length, leads, screeningChanges: screening.length, recordChanges: records.length, postureChanges: postures.length, material: material.length, awaiting: awaitingRole, rechecks, lines: flagged.length },
   };
 }
 
@@ -537,7 +548,7 @@ function runRow(run) {
   const trigger = { scheduled: "Scheduled daily check", "catch-up": "Catch-up on open", manual: "Check now" }[run.trigger] || "Check";
   return `<details class="run"><summary><strong>${esc(dateText(run.at))}</strong><span>${esc(trigger)} · ${esc(roleName(run.role))}</span><span>${plural(run.added || 0, "new item")} · ${read} read · ${down} unavailable · ${plural(changed.length, "screening change")}</span></summary>
     <p class="quiet">${run.since ? `Items dated from ${esc(dayText(run.since))}. ` : ""}${run.screening?.status === "read" ? `The screening list was read and ${esc(run.screening.checked)} vendor names were checked.` : `The screening list was not read. ${esc(run.screening?.note || "")}`}${Number.isFinite(run.durationMs) ? ` The run took ${plural(Math.max(1, Math.round(run.durationMs / 1000)), "second")}.` : ""}</p>
-    ${changed.length ? `<ul class="bm-requests">${changed.map(row => `<li>${esc(row.name)}: from ${esc(row.from)} to ${esc(row.to)}.</li>`).join("")}</ul>` : ""}
+    ${changed.length ? `<ul class="bm-requests">${changed.map(row => `<li>${esc(row.name)}: ${row.from === row.to ? `the list records behind the result changed. The value is still ${esc(row.to)}.` : `from ${esc(row.from)} to ${esc(row.to)}.`}</li>`).join("")}</ul>` : ""}
     <div class="table-scroll"><table><thead><tr><th>Source</th><th>Status</th><th>Found</th><th>New</th><th>Note</th></tr></thead><tbody>${sources.map(row => `<tr>
       <td>${sourceLink({ label: row.label, url: row.page })}<span class="quiet"> ${esc(row.lead ? "Press lead" : tierLabel(row.tier))}</span></td>
       <td><span class="fit-tag ${STEP_TONE[row.status] || "open"}">${esc(sentenceCase(row.status))}</span></td><td>${esc(row.found ?? 0)}</td><td>${esc(row.added ?? 0)}</td><td>${esc(row.note || "")}</td></tr>`).join("")}</tbody></table></div>
@@ -552,6 +563,9 @@ export function scheduleText(state) {
   return `This environment has no scheduled check. ${fallback}`;
 }
 
+// The number of watch items one page holds.
+export const WATCH_PAGE = 60;
+
 export function drawWatch(ctx) {
   const { watch, catalog, loading, error, role, ui, digest, running } = ctx;
   if (error) return `<section class="pane"><p class="block">${esc(error)}</p><div class="row-actions"><button type="button" data-guide-reload="watch">Try again</button></div></section>`;
@@ -562,7 +576,19 @@ export function drawWatch(ctx) {
   const reviewer = WATCH_TOPICS.some(topic => topic.role === role);
   const tab = ["mine", "all", "decided", "rechecks", "runs", "sources"].includes(ui.watchTab) ? ui.watchTab : reviewer ? "mine" : "all";
   const byTopic = (rows) => ui.watchTopic ? rows.filter(item => (item.topics || []).includes(ui.watchTopic)) : rows;
-  const list = (rows, empty) => rows.length ? byTopic(rows).slice(0, 60).map(item => watchItem(item, ctx, reviews)).join("") || `<p class="quiet">No item carries this topic.</p>` : `<p class="quiet">${esc(empty)}</p>`;
+  // A long list is shown a page at a time, newest first. Every item can be reached, and the count is always stated.
+  const shown = Number.isInteger(ui.watchShown) && ui.watchShown >= WATCH_PAGE ? ui.watchShown : WATCH_PAGE;
+  const list = (rows, empty) => {
+    if (!rows.length) return `<p class="quiet">${esc(empty)}</p>`;
+    const matching = byTopic(rows);
+    if (!matching.length) return `<p class="quiet">No item carries this topic.</p>`;
+    const page = matching.slice(0, shown);
+    const left = matching.length - page.length;
+    const paging = matching.length <= WATCH_PAGE ? ""
+      : left ? `<div class="watch-more"><p class="quiet" role="status">Showing ${page.length} of ${matching.length} items, newest first.</p><button type="button" class="ghost" data-watch-more="next">Show ${Math.min(WATCH_PAGE, left)} more</button></div>`
+        : `<div class="watch-more"><p class="quiet" role="status">All ${matching.length} items are shown.</p></div>`;
+    return `${page.map(item => watchItem(item, ctx, reviews)).join("")}${paging}`;
+  };
   const flagged = [...(catalog?.vendors || []), ...(catalog?.parts || [])].filter(entry => entry.recheck.length);
   const last = watch.state.lastRunAt;
   const eo = topicOf("eo14420");

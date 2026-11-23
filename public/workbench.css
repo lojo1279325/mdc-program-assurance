@@ -1016,6 +1016,8 @@ main.guide-view > .history { background: var(--surface); border: 1px solid var(-
 .watch-decision { border-radius: 4px; padding: 8px 10px; background: var(--shell); font-size: 13px; }
 .watch-decision.material { background: #FDE7D8; color: #7A2A08; }
 .watch-review-form { padding-top: 12px; border-top: 1px solid var(--table-line); }
+.watch-more { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 12px 14px; border: 1px dashed var(--line); border-radius: var(--radius); }
+.guide-view .watch-more > * + * { margin-top: 0; }
 .guide-view .run { border: 1px solid var(--line); border-radius: var(--radius); padding: 2px 12px; background: #fff; }
 .guide-view .run[open] { padding-bottom: 12px; }
 .run > summary span { margin-left: 10px; color: var(--muted); font-size: 13px; }

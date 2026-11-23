@@ -7,7 +7,8 @@ import {
   parentKey, partTitle, safeUrl, screenNames, screeningDetail, screeningSignature, siteDomain, valueOf, vendorOf, vendorsNamed, vendorsNamedClearly,
 } from "../public/catalog-model.js";
 import { CATALOG_SEED } from "../public/catalog-seed.js";
-import { listChecks } from "./analysis.js";
+import { lineBenchmark, lineRecheck, normalizeSelection, snapshotOf } from "../public/guide-model.js";
+import { listChecks, screenVendor, screeningAuto, screeningRecord } from "./analysis.js";
 import { syntheticSeed } from "./guide-fixtures.js";
 
 const doc = (kind, key, payload, version = 1) => ({ kind: `catalog-${kind}`, key, payload, version });
@@ -248,6 +249,99 @@ test("Red is indicated only when Trade has confirmed a match on the Specially De
   // A confirmation that went stale no longer counts.
   const stale = build([doc("vendor", "syn-sdn", { fields: { screening: confirmed("No match") } })]);
   assert.equal(benchmark(partIn(stale, "syn-sdn-gen"), stale, us).posture, "Orange");
+});
+
+test("a confirmed match on the Specially Designated Nationals list indicates Red however many lists name the vendor", () => {
+  const sources = [
+    "Capta List (CAP) - Treasury Department", "Denied Persons List (DPL) - Bureau of Industry and Security",
+    "Entity List (EL) - Bureau of Industry and Security", "Military End User (MEU) List - Bureau of Industry and Security",
+    "Sectoral Sanctions Identifications List (SSI) - Treasury Department", "Specially Designated Nationals (SDN) - Treasury Department",
+    "Unverified List (UVL) - Bureau of Industry and Security",
+  ];
+  const index = buildScreeningIndex(sources.map(source => ({ name: "Synthetic Blocked Trading LLC", source, type: "Entity" })));
+  // The readable detail names every list, and the list that blocks dealings comes first.
+  const detail = screeningDetail(screenNames(index, ["Synthetic Blocked Trading LLC"]));
+  assert.match(detail, /^Name match on Specially Designated Nationals \(SDN\) \(Synthetic Blocked Trading LLC\); /);
+  for (const source of sources) assert.ok(detail.includes(source.split(" - ")[0]), `${source} is missing from the detail.`);
+  assert.doesNotMatch(detail, /more lists/);
+
+  const day = "2026-11-22T12:00:00.000Z";
+  const fresh = screenVendor(index, ["Synthetic Blocked Trading LLC"], Date.parse(day));
+  assert.equal(fresh.lists.length, sources.length);
+  assert.equal(fresh.lists[0], "Specially Designated Nationals (SDN)");
+  const auto = { "vendor:syn-sdn": { screening: screeningAuto(screeningRecord(null, fresh, "Match", day)) } };
+  const open = build([], { auto });
+  assert.equal(benchmark(partIn(open, "syn-sdn-gen"), open, us).posture, "Orange");
+  const sdn = build([doc("vendor", "syn-sdn", { fields: { screening: confirmed("Match", "trade", "2026-11-22T13:00:00.000Z") } })], { auto });
+  const blocked = benchmark(partIn(sdn, "syn-sdn-gen"), sdn, us);
+  assert.equal(blocked.posture, "Red");
+  assert.match(blocked.reasons[0].text, /Trade confirmed a match on the Specially Designated Nationals list/);
+
+  // The posture rests on the recorded list names. A detail that is cut short does not lower it.
+  const cut = { "vendor:syn-sdn": { screening: { ...auto["vendor:syn-sdn"].screening, detail: "Name match on Capta List (CAP) (Synthetic Blocked Trading LLC)" } } };
+  const shortened = build([doc("vendor", "syn-sdn", { fields: { screening: confirmed("Match", "trade", "2026-11-22T13:00:00.000Z") } })], { auto: cut });
+  assert.equal(benchmark(partIn(shortened, "syn-sdn-gen"), shortened, us).posture, "Red");
+  // A confirmed match that names no blocking list stays a finding for counsel.
+  const others = buildScreeningIndex(sources.filter(source => !source.startsWith("Specially")).map(source => ({ name: "Synthetic Blocked Trading LLC", source, type: "Entity" })));
+  const plain = { "vendor:syn-sdn": { screening: screeningAuto(screeningRecord(null, screenVendor(others, ["Synthetic Blocked Trading LLC"], Date.parse(day)), "Match", day)) } };
+  const listed = build([doc("vendor", "syn-sdn", { fields: { screening: confirmed("Match", "trade", "2026-11-22T13:00:00.000Z") } })], { auto: plain });
+  assert.equal(benchmark(partIn(listed, "syn-sdn-gen"), listed, us).posture, "Orange");
+});
+
+test("a change in the list entries behind an unconfirmed screening result opens a recheck for Trade", () => {
+  const names = ["Synthetic Listed Works Co., Ltd."];
+  const entity = { name: "Synthetic Listed Works Co., Ltd.", source: "Entity List (EL) - Bureau of Industry and Security", type: "Entity" };
+  const military = { name: "Synthetic Listed Works Co., Ltd.", source: "Military End User (MEU) List - Bureau of Industry and Security", type: "Entity" };
+  const first = screeningRecord(null, screenVendor(buildScreeningIndex([entity]), names, Date.parse("2026-11-20T11:00:00Z")), "Match", "2026-11-20T11:00:00.000Z");
+  assert.equal(first.changedAt, undefined);
+  const before = build([], { auto: { "vendor:syn-cn": { screening: screeningAuto(first) } } });
+  assert.deepEqual(vendorIn(before, "syn-cn").recheck, []);
+
+  // A sourcing line is approved on the first result.
+  const design = { region: "US", design: "A", power: "island" };
+  const base = normalizeSelection({ id: "L-01", subsystem: "generator", category: "gas-engine-set", primary: "syn-cn-gen", alternate: "syn-us-gen" });
+  const snapshot = snapshotOf(lineBenchmark(base, before, design), base, design, "2026-11-21T10:00:00.000Z");
+  const approved = { ...base, status: "Approved", decision: { by: "reviewer@example.com", role: "cpi", at: "2026-11-21T10:00:00.000Z", note: "", snapshot } };
+  assert.deepEqual(lineRecheck(approved, before, design), []);
+
+  // The next check finds the same value on different list entries.
+  const second = screeningRecord(first, screenVendor(buildScreeningIndex([entity, military]), names, Date.parse("2026-11-22T11:00:00Z")), "Match", "2026-11-22T11:00:00.000Z");
+  assert.equal(second.value, "Match");
+  assert.equal(second.changedAt, "2026-11-22T11:00:00.000Z");
+  assert.equal(second.changedFrom, "Match");
+  const auto = { "vendor:syn-cn": { screening: screeningAuto(second) } };
+  const after = build([], { auto });
+  const vendor = vendorIn(after, "syn-cn");
+  assert.equal(vendor.fields.screening.state, "baseline");
+  assert.equal(vendor.recheck.length, 1);
+  assert.deepEqual({ kind: vendor.recheck[0].kind, role: vendor.recheck[0].role, at: vendor.recheck[0].at, reviewId: vendor.recheck[0].reviewId }, { kind: "field", role: "trade", at: "2026-11-22T11:00:00.000Z", reviewId: "field:screening" });
+  assert.equal(vendor.recheck[0].title, "Screening list result is still Match, and the list records behind it changed. Trade has not confirmed it since.");
+  // The posture has not moved, so the open recheck is what reaches the vendor's parts and the approved line.
+  const result = benchmark(partIn(after, "syn-cn-gen"), after, us);
+  assert.equal(result.posture, snapshot.posture);
+  assert.ok(result.requests.includes(`Trade rechecks this entry after a change: ${vendor.recheck[0].title}`));
+  const reasons = lineRecheck(approved, after, design);
+  assert.deepEqual(reasons, [`${vendor.name}: ${vendor.recheck[0].title}`]);
+
+  // The recheck closes when Trade records the field after the change, and it stays open for a confirmation that came before it.
+  const later = build([doc("vendor", "syn-cn", { fields: { screening: confirmed("Match", "trade", "2026-11-22T15:00:00.000Z") } })], { auto });
+  assert.deepEqual(vendorIn(later, "syn-cn").recheck, []);
+  assert.deepEqual(lineRecheck(approved, later, design), []);
+  const earlier = build([doc("vendor", "syn-cn", { fields: { screening: confirmed("Match", "trade", "2026-11-21T09:00:00.000Z") } })], { auto });
+  assert.equal(vendorIn(earlier, "syn-cn").recheck.length, 1);
+  assert.equal(vendorIn(earlier, "syn-cn").fields.screening.stale, true);
+
+  // The rule reads the screening result only. A long text value that changed after its first 80 characters is a
+  // changed value, and it never carries the wording about list records.
+  const opening = "IEC 60034-1 rotating machines, ISO 8528-5 generating sets, UL 2200 stationary engine sets";
+  const standards = {
+    value: `${opening}, and NFPA 110 Level 1.`, source: { label: "Synthetic maker page", url: "https://example.com/standards" }, tier: 2, asOf: "2026-11-22",
+    changedAt: "2026-11-22T11:00:00.000Z", changedFrom: opening.slice(0, 80),
+  };
+  assert.equal(standards.value.slice(0, 80), standards.changedFrom);
+  const text = build([], { auto: { "part:syn-us-gen": { standards } } });
+  assert.equal(partIn(text, "syn-us-gen").fields.standards.changedAt, "2026-11-22T11:00:00.000Z");
+  assert.deepEqual(partIn(text, "syn-us-gen").recheck, []);
 });
 
 test("a missing fact adds an information request and never raises the posture", () => {

@@ -251,13 +251,28 @@ export function screenNames(index, names) {
   return { exact, similar, value: exact.length ? "Match" : similar.length ? "Similar name" : "No match" };
 }
 
-// Groups the hits by list, with the count and one example, so the detail stays short and readable.
+// A match on the Specially Designated Nationals list is the list result the benchmark treats as blocking.
+export const isBlockingList = (list) => /^Specially Designated Nationals\b/i.test(clean(list, 200));
+
+// The distinct lists behind a set of hits. A list that blocks dealings comes first, then the rest in name order.
+export function listNames(rows) {
+  const names = [...new Set((Array.isArray(rows) ? rows : []).map(row => row.list).filter(Boolean))];
+  return names.sort((a, b) => Number(isBlockingList(b)) - Number(isBlockingList(a)) || a.localeCompare(b));
+}
+
+// Groups the hits by list. The first four lists carry the count and one example so the detail stays readable.
+// Every further list is named, so no list is left out of the detail.
 function listGroups(rows) {
   const groups = new Map();
   for (const row of rows) groups.set(row.list, [...(groups.get(row.list) || []), row.name]);
   const shortest = (names) => [...names].sort((a, b) => a.length - b.length || a.localeCompare(b))[0];
-  const parts = [...groups.entries()].slice(0, 4).map(([list, names]) => names.length === 1 ? `${list} (${names[0]})` : `${list} (${names.length} entries, for example ${shortest(names)})`);
-  return `${parts.join("; ")}${groups.size > 4 ? `; and ${groups.size - 4} more lists` : ""}`;
+  const lists = listNames(rows);
+  const parts = lists.slice(0, 4).map(list => {
+    const names = groups.get(list);
+    return names.length === 1 ? `${list} (${names[0]})` : `${list} (${names.length} entries, for example ${shortest(names)})`;
+  });
+  const rest = lists.slice(4);
+  return `${parts.join("; ")}${rest.length ? `; also named on ${rest.join(", ")}` : ""}`;
 }
 
 export function screeningDetail(result) {
@@ -346,6 +361,8 @@ export function applyOverlay(entry, overlay, asOf, extras = {}) {
   const base = { ...entry.baseline };
   const autoField = (auto) => baselineField(auto.value, auto.source, auto.tier ?? 1, auto.asOf || asOf, {
     ...(auto.detail ? { detail: clean(auto.detail, 700) } : {}),
+    // The lists behind a screening match are kept as data, so a rule never depends on how the detail is worded or cut.
+    ...(Array.isArray(auto.lists) ? { lists: auto.lists.map(name => clean(name, 160)).filter(Boolean).slice(0, 40) } : {}),
     ...(auto.changedAt ? { changedAt: clean(auto.changedAt, 40), changedFrom: clean(auto.changedFrom, 80) } : {}),
   });
   for (const source of [payload.auto, extras.auto]) {
@@ -382,8 +399,10 @@ export function applyOverlay(entry, overlay, asOf, extras = {}) {
     // A confirmation goes stale when the sourced value moved, or when the watch recorded a change after it.
     const stale = Boolean(record && (clean(record.baseline, 400) !== clean(baseline.value, 400) || (baseline.changedAt && record.at && baseline.changedAt > record.at)));
     if (!record) { fields[def.id] = { ...baseline, id: def.id, state: "baseline", baselineValue: baseline.value, baselineSource: baseline.source }; continue; }
+    // A value the role entered carries the role's own detail. The lists behind the sourced value do not describe it.
+    const { lists: sourcedLists, ...sourced } = baseline;
     fields[def.id] = record.state === "changed"
-      ? { ...baseline, id: def.id, value: clean(record.value, 400), detail: clean(record.detail, 700), source: record.source?.label || record.source?.url ? { label: clean(record.source.label, 160), url: safeUrl(record.source.url) } : { label: "No source recorded", url: "" }, tier: "R", asOf: /^\d{4}-\d{2}-\d{2}/.test(String(record.at || "")) ? String(record.at).slice(0, 10) : baseline.asOf, state: "changed", baselineValue: baseline.value, baselineSource: baseline.source, reason: clean(record.reason, 600), by: record.by, role: record.role, at: record.at, stale }
+      ? { ...sourced, id: def.id, value: clean(record.value, 400), detail: clean(record.detail, 700), source: record.source?.label || record.source?.url ? { label: clean(record.source.label, 160), url: safeUrl(record.source.url) } : { label: "No source recorded", url: "" }, tier: "R", asOf: /^\d{4}-\d{2}-\d{2}/.test(String(record.at || "")) ? String(record.at).slice(0, 10) : baseline.asOf, state: "changed", baselineValue: baseline.value, baselineSource: baseline.source, reason: clean(record.reason, 600), by: record.by, role: record.role, at: record.at, stale }
       : { ...baseline, id: def.id, state: "confirmed", baselineValue: baseline.value, baselineSource: baseline.source, by: record.by, role: record.role, at: record.at, stale };
   }
   const cleared = Array.isArray(payload.cleared) ? payload.cleared : [];
@@ -393,7 +412,17 @@ export function applyOverlay(entry, overlay, asOf, extras = {}) {
     recheck.push({ reviewId: review.id, kind: "review", title: clean(review.title, 240), url: safeUrl(review.url), topics: review.topics || [], role: review.ownerRole || "trade", at: review.at, note: clean(review.note, 400) });
   }
   for (const def of fieldsFor(kind)) {
-    if (fields[def.id].stale) recheck.push({ reviewId: `field:${def.id}`, kind: "field", title: `${def.label} changed after it was confirmed. The sourced value is now ${fields[def.id].baselineValue}.`, url: fields[def.id].source?.url || "", topics: [], role: def.owner, at: fields[def.id].changedAt || fields[def.id].asOf, note: "" });
+    const field = fields[def.id];
+    if (field.stale) recheck.push({ reviewId: `field:${def.id}`, kind: "field", title: `${def.label} changed after it was confirmed. The sourced value is now ${field.baselineValue}.`, url: field.source?.url || "", topics: [], role: def.owner, at: field.changedAt || field.asOf, note: "" });
+    // A check can find the same screening result resting on different list records, such as a match that moved to other list entries.
+    // The value, the posture, and the rules all stay the same, so nothing else shows the change. While no role has
+    // recorded the result, the dated change stays open for the owning role and reaches the sourcing lines that use the entry.
+    // Only the screening result is dated this way. Every other field is dated when its value changes.
+    else if (def.id === "screening" && field.state === "baseline" && field.changedAt && clean(field.changedFrom, 80) === clean(field.value, 80)) recheck.push({
+      reviewId: `field:${def.id}`, kind: "field",
+      title: `${def.label} is still ${field.value}, and the list records behind it changed. ${FIELD_ROLE_LABEL[def.owner] || "The owning role"} has not confirmed it since.`,
+      url: field.source?.url || "", topics: [], role: def.owner, at: field.changedAt, note: "",
+    });
   }
   return {
     ...entry, fields, version: overlay?.version || 0,
@@ -573,7 +602,9 @@ export function benchmark(part, catalog, context = {}) {
   const detail = vendor.fields.screening?.detail || "";
   if (screening === "Match") {
     const confirmed = isConfirmed(vendor, "screening");
-    const blocked = /Specially Designated Nationals/i.test(detail);
+    // The recorded list names decide this. The wording of the detail decides it only for a value a role entered and for a record kept without list names.
+    const field = vendor.fields.screening;
+    const blocked = field?.state !== "changed" && Array.isArray(field?.lists) ? field.lists.some(isBlockingList) : /Specially Designated Nationals/i.test(detail);
     if (confirmed && blocked) add("screening", "Red", "Trade confirmed a match on the Specially Designated Nationals list. Dealings with a blocked party are generally prohibited for US persons. Do not proceed until counsel resolves it.", CITES.csl);
     else add("screening", "Orange", `${confirmed ? "Trade confirmed a screening list match." : "The vendor or its parent has a name match on a screening list that Trade has not yet confirmed."} ${detail} Counsel states what the listing restricts before any purchase.`, CITES.csl);
   } else if (screening === "Similar name" && !isConfirmed(vendor, "screening")) {
