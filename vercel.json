@@ -1,6 +1,12 @@
 {
   "version": 2,
   "outputDirectory": "public",
+  "functions": {
+    "api/*.js": { "maxDuration": 60 }
+  },
+  "crons": [
+    { "path": "/api/watch/cron", "schedule": "0 11 * * *" }
+  ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api" }
   ]

@@ -15,6 +15,8 @@ import { lookupSources, sourceStatus } from "./sources.js";
 import { PRACTICE_PROJECT, practiceActor, practiceRoleFrom, practiceSeedPlan } from "./practice.js";
 import { rowsFromWorkbook, workbookFromRows } from "./sheet.js";
 import { decorateRiskRecords, prepareRiskChange, registerRiskRoutes } from "./risk-api.js";
+import { anyProjectRole, effectiveRole, projectRolesFor, registerProjectRoleRoutes } from "./project-roles.js";
+import { registerGuideRoutes } from "./guide-api.js";
 
 const defaultStore = openStore();
 
@@ -52,7 +54,7 @@ async function sessionFrom(req, store = defaultStore) {
   return store.readSession(id);
 }
 
-export function createApp({ store = defaultStore } = {}) {
+export function createApp({ store = defaultStore, fetchImpl } = {}) {
   const app = express();
   app.use(express.json({ limit: "3mb" }));
 
@@ -83,6 +85,7 @@ export function createApp({ store = defaultStore } = {}) {
       state: decision === "granted" ? "granted" : "pending",
       email: session.email,
       role: decision === "granted" ? grant.role : null,
+      projectRoles: decision === "granted" ? await projectRolesFor(store, environment, session.email, grant.role) : {},
       administrator: designatedAdministrators().includes(session.email) || grant?.role === "administrator",
     }));
   });
@@ -235,6 +238,12 @@ export function createApp({ store = defaultStore } = {}) {
     return { session, grant, environment };
   }
 
+  // The working role for one project: a project assignment when one exists,
+  // otherwise the environment grant. Administrator grants are never replaced.
+  function roleIn(actor, projectId) {
+    return effectiveRole(store, actor.environment, actor.session.email, actor.grant.role, projectId);
+  }
+
   app.get("/api/workbench", async (req, res) => {
     const actor = await grantedActor(req);
     if (actor.error) {
@@ -257,10 +266,19 @@ export function createApp({ store = defaultStore } = {}) {
       return;
     }
     const existing = parseReview((await store.listItems(actor.environment)).find((row) => row.code === code));
+    const homeProject = cleanProjectId(existing?.projectId || req.body?.projectId);
+    const projectRole = await roleIn(actor, homeProject);
+    // The record is filed under the project the saved copy names. A missing or
+    // unreadable project is filed under MDC, so the role is checked there too.
+    const targetProject = cleanProjectId(req.body?.projectId);
+    if (existing && targetProject !== homeProject && await roleIn(actor, targetProject) !== projectRole) {
+      res.status(403).json({ message: "Your role differs in the target project. Ask an administrator to align your project roles first." });
+      return;
+    }
     const acting = practiceActor({
       environment: actor.environment,
       designated: designatedAdministrators().includes(actor.session.email),
-      grantRole: actor.grant.role,
+      grantRole: projectRole,
       email: actor.session.email,
       requestedRole: practiceRoleFrom(req.get("x-practice-role")),
       projectId: req.body?.projectId || existing?.projectId,
@@ -303,7 +321,15 @@ export function createApp({ store = defaultStore } = {}) {
     res.json(parseReview(saved) || record);
   });
 
-  registerRiskRoutes(app, { store, grantedActor, parseReview });
+  // The risk routes and the design and sourcing routes use the working role for the project named in each request.
+  const projectActor = async (req, projectId) => {
+    const actor = await grantedActor(req);
+    if (actor.error || projectId === undefined) return actor;
+    return { ...actor, grant: { ...actor.grant, role: await roleIn(actor, projectId) } };
+  };
+  registerRiskRoutes(app, { store, parseReview, grantedActor: projectActor });
+  registerProjectRoleRoutes(app, { store, grantedActor });
+  registerGuideRoutes(app, { store, grantedActor: projectActor, fetchImpl });
 
   app.post("/api/workbench/practice", async (req, res) => {
     const actor = await grantedActor(req);
@@ -358,7 +384,7 @@ export function createApp({ store = defaultStore } = {}) {
       res.status(actor.error).json({ message: actor.message });
       return;
     }
-    if (actor.grant.role !== "nstt") {
+    if (!(await anyProjectRole(store, actor.environment, actor.session.email, actor.grant.role, "nstt"))) {
       res.status(403).json({ message: "Only the NSTT role can import register updates." });
       return;
     }
@@ -377,8 +403,12 @@ export function createApp({ store = defaultStore } = {}) {
       const existing = current.get(String(row.code || "").trim().toUpperCase());
       const outcome = applyImportRow(existing, row, actor.session.email);
       if (outcome.result === "applied") {
-        const riskBlock = await prepareRiskChange({ store, environment: actor.environment, actor: { email: actor.session.email, role: actor.grant.role }, existing, record: outcome.record, practice: false });
-        const privilege = riskBlock || importPrivilege(actor.grant.role, existing, outcome.record) || (existing?.riskAssessment && existing.status === "In review" ? "Return this risk assessment before importing changes." : "");
+        const rowRole = await roleIn(actor, existing?.projectId || outcome.record.projectId);
+        const crossProject = existing && cleanProjectId(existing.projectId) !== cleanProjectId(outcome.record.projectId)
+          && await roleIn(actor, outcome.record.projectId) !== rowRole;
+        const roleBlock = rowRole !== "nstt" ? "Your role in this record's project is not NSTT." : crossProject ? "Your role differs in the target project." : "";
+        const riskBlock = roleBlock || await prepareRiskChange({ store, environment: actor.environment, actor: { email: actor.session.email, role: rowRole }, existing, record: outcome.record, practice: false });
+        const privilege = riskBlock || importPrivilege(rowRole, existing, outcome.record) || (existing?.riskAssessment && existing.status === "In review" ? "Return this risk assessment before importing changes." : "");
         if (privilege) {
           rejected += 1;
           results.push({ code: outcome.code, result: "rejected", message: privilege });
@@ -491,7 +521,14 @@ export function createApp({ store = defaultStore } = {}) {
     if (current?.riskAssessment && !["Open", "Returned"].includes(current.status)) {
       res.status(403).json({ message: "Return this risk-assessed record before restoring a version." }); return;
     }
-    const privilege = restorePrivilege(actor.grant.role, restored, current);
+    const restoreProject = cleanProjectId(current?.projectId || restored.projectId);
+    const restoreRole = await roleIn(actor, restoreProject);
+    // A version saved in another project would carry the record back there.
+    if (restored.projectId !== restoreProject && await roleIn(actor, restored.projectId) !== restoreRole) {
+      res.status(403).json({ message: "Your role differs in the project this version belongs to. Ask an administrator to align your project roles first." });
+      return;
+    }
+    const privilege = restorePrivilege(restoreRole, restored, current);
     if (privilege) {
       res.status(403).json({ message: privilege });
       return;
@@ -500,7 +537,7 @@ export function createApp({ store = defaultStore } = {}) {
     if (restored.status === "Approved" || restored.status === "In review") restored.status = "Returned";
     if (current?.riskAssessment && !restored.riskAssessment) restored.riskAssessment = { ...current.riskAssessment, validation: null };
     if (restored.riskAssessment) {
-      const riskBlock = await prepareRiskChange({ store, environment: actor.environment, actor: { email: actor.session.email, role: actor.grant.role }, existing: current, record: restored, practice: false });
+      const riskBlock = await prepareRiskChange({ store, environment: actor.environment, actor: { email: actor.session.email, role: restoreRole }, existing: current, record: restored, practice: false });
       if (riskBlock) { res.status(403).json({ message: riskBlock }); return; }
       restored.riskAssessment.validation = null;
     }
