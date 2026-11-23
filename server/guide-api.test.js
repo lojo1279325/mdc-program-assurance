@@ -12,6 +12,7 @@ import { agentReply, syntheticNetwork } from "./guide-fixtures.js";
 import { WATCH_PARTITION } from "./watch.js";
 import { CATALOG_SEED } from "../public/catalog-seed.js";
 import { categoryOf, mergeCatalog } from "../public/catalog-model.js";
+import { dailyDigest } from "../public/catalogview.js";
 import { GATES } from "../public/guide-model.js";
 
 process.env.APP_ENV = "development";
@@ -498,6 +499,53 @@ test("the AI analysis fills only values that cite a retrieved page, and it never
   const vendor = (await catalog("cpi")).vendors.find(row => row.id === "synthetic-controls-gmbh");
   assert.deepEqual([vendor.fields.hqCountry.value, vendor.fields.hqCountry.state], ["AT", "changed"]);
   noEmail(done);
+});
+
+test("a parent found by the analysis is screened in the same run, and the daily update reports the change it dates", async (t) => {
+  const { store, net, request, ok, entry, analyze, catalog } = await harness(t);
+  process.env.PERPLEXITY_API_KEY = "synthetic-test-key";
+  t.after(() => { delete process.env.PERPLEXITY_API_KEY; });
+  const id = "synthetic-power-corp";
+  const added = ok(await entry("nstt", { kind: "vendor", legalName: "Synthetic Power Corp", website: "synthetic-power.example" }), 201).document;
+  assert.deepEqual([added.payload.auto.screening.value, "screening" in added.payload.log.at(-1)], ["No match", false]);
+
+  const story = "https://news.example.org/ownership";
+  const parent = "Synthetic Listed Works Co., Ltd.";
+  net.state.agent = () => agentReply({
+    pages: [{ url: story, title: "Synthetic press story", snippet: `Synthetic Power Corp is a wholly owned subsidiary of ${parent}.`, fetched: true }],
+    fields: [{ id: "ultimateParent", value: parent, sourceUrl: story, sourceTitle: "", quote: `wholly owned subsidiary of ${parent}` }],
+  });
+  const done = ok(await analyze("trade", { kind: "vendor", id })).document;
+  assert.deepEqual(done.payload.analysis.steps.map(row => [row.id, row.status]), [["registry", "read"], ["sec", "read"], ["lists", "read"], ["screening", "read"], ["ai", "read"]]);
+  assert.equal(done.payload.analysis.steps.find(row => row.id === "screening").note, "3 list records were checked against 2 names. The check ran again with the ultimate parent that the AI analysis recorded.");
+  assert.deepEqual([done.payload.auto.ultimateParent.value, done.payload.auto.screening.value, done.payload.auto.screening.changedFrom, done.payload.auto.screening.changedAt], [parent, "Match", "No match", done.payload.analysis.at]);
+  // The history entry keeps what the change started from. The role is kept and the person is not.
+  const row = done.payload.log.at(-1);
+  assert.deepEqual([row.action, row.role, row.note, "by" in row], ["analyze", "trade", "Filled or refreshed from cited sources: Screening list result, Ultimate parent.", false]);
+  assert.deepEqual([row.screening.from, row.screening.to, row.screening.fromLists], ["No match", "Match", []]);
+  assert.match(row.screening.fromDetail, /^No name match\. A clear result is not an approval\. Names checked: Synthetic Power Corp\. List data retrieved /);
+  noEmail(done);
+
+  // The result is unconfirmed, and it is the sourced value that Trade reads. Nothing a role owns was recorded.
+  const vendor = (await catalog("trade")).vendors.find(item => item.id === id);
+  assert.deepEqual([vendor.fields.screening.value, vendor.fields.screening.state, vendor.fields.ultimateParent.value, vendor.fields.ultimateParent.state, vendor.fields.ultimateParent.tier], ["Match", "baseline", parent, "baseline", 5]);
+  assert.deepEqual(done.payload.fields, {});
+
+  // The next check screens the same names and dates nothing for this vendor. The daily update still reports the change.
+  ok(await request("cpi", "/api/watch/run", { trigger: "manual" }));
+  const watch = ok(await request("trade", "/api/watch?project=MDC"));
+  assert.equal(watch.runs[0].screening.changed.some(item => item.id === id), false);
+  const digest = dailyDigest({ watch, catalog: await catalog("trade"), now: Date.now() });
+  assert.equal(digest.bullets.find(item => item.kind === "screening").text.includes("Synthetic Power Corp (from No match to Match)"), true);
+
+  // A later analysis finds the same names. The earlier change keeps its date, and the new history entry carries no change.
+  const held = await store.readGuideDocument("development", "catalog-vendor", id);
+  const earlier = new Date(Date.parse(held.payload.analysis.at) - 60 * 1000).toISOString();
+  await store.saveGuideDocument({ environment: "development", projectId: "*catalog", kind: "catalog-vendor", key: id, expectedVersion: held.version, savedBy: users.trade, payload: { ...held.payload, analysis: { ...held.payload.analysis, at: earlier } } });
+  const again = ok(await analyze("cpi", { kind: "vendor", id })).document;
+  assert.deepEqual([again.payload.auto.screening.value, again.payload.auto.screening.changedAt, again.payload.auto.screening.checkedAt], ["Match", done.payload.analysis.at, again.payload.analysis.at]);
+  assert.deepEqual([again.payload.log.at(-1).action, again.payload.log.at(-1).role, "screening" in again.payload.log.at(-1)], ["analyze", "cpi", false]);
+  assert.equal(again.payload.log.filter(item => item.screening).length, 1);
 });
 
 // ---------- Portfolio and practice ----------

@@ -123,6 +123,17 @@ export function screeningRecord(previous, fresh, baselineValue, nowIso) {
   return record;
 }
 
+// What a dated change started from: the earlier value, its detail, and the lists it named. The daily update states
+// the change from this, and it benchmarks the parts on the earlier result.
+export function screeningChange(record, prior, field) {
+  // The list names come from the same record as the earlier value. A record kept without them adds none.
+  const lists = prior ? prior.lists : field?.lists;
+  return {
+    from: clean(record.changedFrom, 80), to: record.value, fromDetail: clean(prior?.detail ?? field?.detail, 300),
+    ...(Array.isArray(lists) ? { fromLists: lists.map(name => clean(name, 160)).filter(Boolean).slice(0, 40) } : {}),
+  };
+}
+
 // The stored screening record as a sourced field value.
 export function screeningAuto(record) {
   return {
@@ -511,10 +522,80 @@ export async function analyzeEntry({ kind, entry, vendor = null, context = {}, p
   const rows = [];
   const steps = [];
   const ctx = { region: REGIONS.some(row => row.id === context.region) ? context.region : "US", power: POWER_LABEL[context.power] ? context.power : "island" };
-  const step = (id, label, status, note = "") => steps.push({ id, label, status, note: clean(note, 300) });
+  // A step that runs twice in one analysis keeps its place and shows its last result.
+  const step = (id, label, status, note = "") => {
+    const row = { id, label, status, note: clean(note, 300) };
+    const at = steps.findIndex(item => item.id === id);
+    if (at < 0) steps.push(row); else steps[at] = row;
+  };
   const domain = cleanDomain(kind === "vendor" ? entry.domain : vendor?.domain);
   let registryRecord = null;
   let screening = null;
+
+  // The names the next check will screen for this vendor: its own names, with the legal name and the parent as this run leaves them.
+  const NAME_FIELDS = [["legalName", "legal name"], ["ultimateParent", "ultimate parent"]];
+  const nameValue = (id) => clean(auto[id]?.value ?? valueOf(entry, id), 400);
+  const namesNow = () => entityNames({ ...entry, fields: { ...entry.fields, ...Object.fromEntries(NAME_FIELDS.filter(([id]) => auto[id]).map(([id]) => [id, auto[id]])) } });
+  const listRow = (row) => {
+    const at = rows.findIndex(item => item.id === row.id && item.origin === "list");
+    if (at < 0) rows.push(row); else rows[at] = row;
+  };
+  let listData = null;
+  let listError = "";
+  let checkedNames = null;
+  let checkedValues = {};
+
+  // Checks the dated lists and the screening list against the vendor's names. The check runs after the registry step.
+  // It runs again when the AI step records a new legal name or parent, so a name found in this run is checked in this run.
+  // Each result is compared with what was on record before the run, so one run dates one change.
+  async function checkLists() {
+    const again = checkedNames !== null;
+    const moved = NAME_FIELDS.filter(([id]) => nameValue(id) !== checkedValues[id]).map(([, label]) => label);
+    const found = moved.join(" and ") || "name";
+    const ranAgain = again ? ` The check ran again with the ${found} that the AI analysis recorded.` : "";
+    const checked = namesNow();
+    checkedNames = checked.join("\n");
+    checkedValues = Object.fromEntries(NAME_FIELDS.map(([id]) => [id, nameValue(id)]));
+    const lists = listChecks(checked);
+    for (const id of ["fccCovered", "section1260h"]) {
+      const current = entry.fields?.[id];
+      const sourced = current ? current.baselineValue ?? current.value : "";
+      const row = { id, label: fieldDef(kind, id).label, value: lists[id].value, source: lists[id].source, tier: 1, origin: "list", applied: false, note: "The list check agrees with the recorded value." };
+      // The second check replaces what the first check found, so a value that returns to the recorded one is not written.
+      delete auto[id];
+      // A value that moved is dated, so an earlier confirmation by the role shows for recheck.
+      if (isMissing(sourced) || sourced !== lists[id].value) {
+        auto[id] = { ...lists[id], ...(isMissing(sourced) ? {} : { changedAt: nowIso, changedFrom: clean(sourced, 80) }) };
+        row.applied = true;
+        row.note = isMissing(sourced) ? "" : `The list check changed from ${clean(sourced, 80)}.${recorded(entry, id) ? " The field is flagged for recheck." : ""}`;
+      }
+      listRow(row);
+    }
+    step("lists", "FCC Covered List and Section 1260H list", "read", `Checked against the FCC list as of ${longDate(FCC_LIST.asOf)} and the Section 1260H list as of ${longDate(S1260H_LIST.asOf)}.${ranAgain}`);
+    try {
+      // The list is downloaded once in a run. A download that failed is not tried again, so the run stays inside its time limit.
+      if (!again) listData = await loadScreeningIndex({ fetchImpl, now });
+      if (!listData) throw new Error(listError || "The screening list could not be read.");
+      const fresh = screenVendor(listData.index, checked, now);
+      screening = screeningRecord(previousScreening, fresh, entry.fields?.screening?.baselineValue, nowIso);
+      auto.screening = screeningAuto(screening);
+      const before = entry.fields?.screening?.baselineValue;
+      const refreshed = isMissing(before) || screening.changedAt === nowIso;
+      listRow({
+        id: "screening", label: fieldDef(kind, "screening").label, value: fresh.value, source: CITES.csl, tier: 1, origin: "list", applied: refreshed,
+        note: !refreshed ? "The result is unchanged. The check date is refreshed."
+          : screening.changedAt !== nowIso ? ""
+            : screening.changedFrom === fresh.value ? "The list records behind the result changed." : `The result changed from ${screening.changedFrom}.`,
+      });
+      step("screening", "US Consolidated Screening List", "read", `${listData.records.toLocaleString("en-US")} list records were checked against ${checked.length} ${checked.length === 1 ? "name" : "names"}.${ranAgain}`);
+    } catch (error) {
+      if (!again) listError = clean(error?.message, 170);
+      // The earlier screening result stands. The step names what this run did not check.
+      step("screening", "US Consolidated Screening List", "unavailable", again
+        ? `${sentence(listError || clean(error?.message, 170)) || "The screening list could not be read."} The new ${found} ${moved.length > 1 ? "were" : "was"} not screened in this run. The next check screens ${moved.length > 1 ? "them" : "it"}.`
+        : error.message);
+    }
+  }
 
   if (kind === "vendor") {
     const names = ownNames(entry);
@@ -546,38 +627,8 @@ export async function analyzeEntry({ kind, entry, vendor = null, context = {}, p
       } catch (error) { step("sec", "SEC registrant list", "unavailable", error.message); }
     } else step("sec", "SEC registrant list", "not needed", "The SEC registrant number already holds a value from an earlier check.");
 
-    // Dated lists and the screening list always refresh, with the parent the registry just reported.
-    const parentName = auto.ultimateParent && !/^no parent/i.test(auto.ultimateParent.value) && !isMissing(auto.ultimateParent.value) ? [auto.ultimateParent.value] : [];
-    const checked = [...new Set([...entityNames(entry), ...parentName])];
-    const lists = listChecks(checked);
-    for (const id of ["fccCovered", "section1260h"]) {
-      const current = entry.fields?.[id];
-      const sourced = current ? current.baselineValue ?? current.value : "";
-      const row = { id, label: fieldDef(kind, id).label, value: lists[id].value, source: lists[id].source, tier: 1, origin: "list", applied: false, note: "The list check agrees with the recorded value." };
-      // A value that moved is dated, so an earlier confirmation by the role shows for recheck.
-      if (isMissing(sourced) || sourced !== lists[id].value) {
-        auto[id] = { ...lists[id], ...(isMissing(sourced) ? {} : { changedAt: nowIso, changedFrom: clean(sourced, 80) }) };
-        row.applied = true;
-        row.note = isMissing(sourced) ? "" : `The list check changed from ${clean(sourced, 80)}.${recorded(entry, id) ? " The field is flagged for recheck." : ""}`;
-      }
-      rows.push(row);
-    }
-    step("lists", "FCC Covered List and Section 1260H list", "read", `Checked against the FCC list as of ${longDate(FCC_LIST.asOf)} and the Section 1260H list as of ${longDate(S1260H_LIST.asOf)}.`);
-    try {
-      const loaded = await loadScreeningIndex({ fetchImpl, now });
-      const fresh = screenVendor(loaded.index, checked, now);
-      screening = screeningRecord(previousScreening, fresh, entry.fields?.screening?.baselineValue, nowIso);
-      auto.screening = screeningAuto(screening);
-      const before = entry.fields?.screening?.baselineValue;
-      const moved = isMissing(before) || screening.changedAt === nowIso;
-      rows.push({
-        id: "screening", label: fieldDef(kind, "screening").label, value: fresh.value, source: CITES.csl, tier: 1, origin: "list", applied: moved,
-        note: !moved ? "The result is unchanged. The check date is refreshed."
-          : screening.changedAt !== nowIso ? ""
-            : screening.changedFrom === fresh.value ? "The list records behind the result changed." : `The result changed from ${screening.changedFrom}.`,
-      });
-      step("screening", "US Consolidated Screening List", "read", `${loaded.records.toLocaleString("en-US")} list records were checked against ${checked.length} ${checked.length === 1 ? "name" : "names"}.`);
-    } catch (error) { step("screening", "US Consolidated Screening List", "unavailable", error.message); }
+    // Dated lists and the screening list always refresh, with the legal name and the parent the registry just reported.
+    await checkLists();
   }
 
   // AI analysis: facts still open to a better source, and a reading of each fit criterion for a part.
@@ -647,6 +698,8 @@ export async function analyzeEntry({ kind, entry, vendor = null, context = {}, p
       step("ai", label, "unavailable", analysis.message);
     }
   }
+  // A legal name or a parent that the AI step recorded is checked against the lists in this same run.
+  if (kind === "vendor" && namesNow().join("\n") !== checkedNames) await checkLists();
   const firstChecks = useAi && earlier && earlier.day === day && Array.isArray(earlier.steps) && earlier.steps.some(row => row.id === "ai" && row.status === "not run");
   if (firstChecks) carryFirstChecks(earlier, rows, steps);
   if (!analysis.summary) {

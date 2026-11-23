@@ -345,6 +345,150 @@ test("an identifier from the AI step is accepted only after the registry returns
   assert.equal(result.auto.lei.source.label, "GLEIF legal entity record");
 });
 
+// ---------- A name that the AI step records ----------
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const POWER = "Synthetic Power Corp";
+const POWER_SITE = "synthetic-power.example";
+const LISTED = "Synthetic Listed Works Co., Ltd.";
+const STORY = "https://news.example.org/ownership";
+const FILING = "https://www.sec.gov/Archives/edgar/data/1999999/synthetic-annual-report.htm";
+const RAN_AGAIN = "The check ran again with the ultimate parent that the AI analysis recorded.";
+// The answer of the AI step: an ultimate parent, the page that states it, and any other field.
+const parentAnswer = (parent, url, extra = []) => () => agentReply({
+  pages: [{ url, title: "Synthetic ownership page", snippet: `${POWER} is a wholly owned subsidiary of ${parent}. Its registered name is Synthetic Power Corporation.`, fetched: true }],
+  fields: [{ id: "ultimateParent", value: parent, sourceUrl: url, sourceTitle: "", quote: `wholly owned subsidiary of ${parent}` }, ...extra],
+});
+const listDownloads = (net) => net.state.calls.filter(call => call.host === "data.trade.gov").length;
+const listRows = (result) => result.analysis.fields.filter(row => row.origin === "list").map(row => [row.id, row.value, row.applied, row.note]);
+// The vendor after its first checks: no registry record, one registrant number, and a clear screening result.
+async function checkedVendor(net) {
+  const first = await analyzeEntry({ kind: "vendor", entry: addedVendor(POWER, POWER_SITE), useAi: false, fetchImpl: net.fetchImpl, env: {}, now: NOW });
+  return { first, entry: addedVendor(POWER, POWER_SITE, { auto: first.auto, analysis: first.analysis }) };
+}
+
+test("a parent that the AI step records is screened in the same run, and the change is dated from the result on record", async () => {
+  const net = network();
+  const { first, entry } = await checkedVendor(net);
+  assert.equal(first.screening.detail, "No name match. A clear result is not an approval. Names checked: Synthetic Power Corp. List data retrieved November 22, 2026.");
+
+  // The next day the AI step finds the parent on a press page. The parent is on the Entity List.
+  net.state.agent = parentAnswer(LISTED, STORY);
+  const before = listDownloads(net);
+  const result = await analyzeEntry({ kind: "vendor", entry, previousScreening: first.screening, earlier: first.analysis, useAi: true, fetchImpl: net.fetchImpl, env: KEY, now: NOW + DAY_MS });
+  assert.deepEqual(steps(result), [["registry", "read"], ["sec", "not needed"], ["lists", "read"], ["screening", "read"], ["ai", "read"]]);
+  assert.equal(stepNote(result, "screening"), `3 list records were checked against 2 names. ${RAN_AGAIN}`);
+  assert.equal(stepNote(result, "lists").endsWith(`2026. ${RAN_AGAIN}`), true);
+  // The list is downloaded once in the run, and each list field keeps one row that shows the second check.
+  assert.equal(listDownloads(net) - before, 1);
+  assert.deepEqual(listRows(result), [
+    ["fccCovered", "Not named", false, "The list check agrees with the recorded value."],
+    ["section1260h", "Not listed", false, "The list check agrees with the recorded value."],
+    ["screening", "Match", true, "The result changed from No match."],
+  ]);
+  assert.deepEqual(result.analysis.fields.map(row => row.id), ["fccCovered", "section1260h", "screening", "ultimateParent"]);
+  assert.deepEqual([result.auto.ultimateParent.value, result.auto.ultimateParent.tier], [LISTED, 5]);
+  // One change is dated, and it starts from the result on record before the run.
+  assert.deepEqual([result.screening.value, result.screening.changedFrom, result.screening.changedAt, result.screening.lists], ["Match", "No match", "2026-11-23T15:00:00.000Z", ["Entity List (EL)"]]);
+  assert.match(result.screening.detail, /^Name match on Entity List \(EL\) \(Synthetic Listed Works Co\., Ltd\.\)\. A list match is a finding to resolve\. It is not a legal conclusion\./);
+  assert.equal(result.screening.detail.endsWith("Names checked: Synthetic Power Corp; Synthetic Listed Works Co., Ltd. List data retrieved November 23, 2026."), true);
+  assert.deepEqual([result.auto.screening.value, result.auto.screening.changedFrom, result.auto.screening.signature], ["Match", "No match", result.screening.signature]);
+  noLongDash(result);
+
+  // A day later a government filing names a different parent. It replaces the press lead, so the earlier parent is no longer screened.
+  const held = addedVendor(POWER, POWER_SITE, { auto: { ...first.auto, ...result.auto }, analysis: result.analysis });
+  net.state.agent = parentAnswer("Synthetic Capital Partners", FILING);
+  const replaced = await analyzeEntry({ kind: "vendor", entry: held, previousScreening: result.screening, earlier: result.analysis, useAi: true, fetchImpl: net.fetchImpl, env: KEY, now: NOW + 2 * DAY_MS });
+  assert.deepEqual([replaced.auto.ultimateParent.value, replaced.auto.ultimateParent.tier, replaced.auto.ultimateParent.changedFrom], ["Synthetic Capital Partners", 1, LISTED]);
+  assert.equal(stepNote(replaced, "screening"), `3 list records were checked against 2 names. ${RAN_AGAIN}`);
+  assert.deepEqual([replaced.screening.value, replaced.screening.changedFrom, replaced.screening.changedAt, replaced.screening.lists], ["No match", "Match", "2026-11-24T15:00:00.000Z", []]);
+  assert.equal(replaced.screening.detail, "No name match. A clear result is not an approval. Names checked: Synthetic Power Corp; Synthetic Capital Partners. List data retrieved November 24, 2026.");
+  assert.deepEqual(listRows(replaced).at(-1), ["screening", "No match", true, "The result changed from Match."]);
+});
+
+test("an unlisted parent is counted and dates no change, and the check does not run again without a new name", async () => {
+  const net = network();
+  const { first, entry } = await checkedVendor(net);
+  const rerun = (extra = {}) => analyzeEntry({ kind: "vendor", entry, previousScreening: first.screening, earlier: first.analysis, useAi: true, fetchImpl: net.fetchImpl, env: KEY, now: NOW + DAY_MS, ...extra });
+
+  net.state.agent = parentAnswer("Synthetic Capital Partners", FILING);
+  const unlisted = await rerun();
+  assert.equal(stepNote(unlisted, "screening"), `3 list records were checked against 2 names. ${RAN_AGAIN}`);
+  assert.deepEqual([unlisted.screening.value, "changedAt" in unlisted.screening, "changedAt" in unlisted.auto.screening], ["No match", false, false]);
+  assert.equal(unlisted.screening.detail, "No name match. A clear result is not an approval. Names checked: Synthetic Power Corp; Synthetic Capital Partners. List data retrieved November 23, 2026.");
+  assert.deepEqual(listRows(unlisted).at(-1), ["screening", "No match", false, "The result is unchanged. The check date is refreshed."]);
+
+  // No key, a refused key, an answer with no parent, and a parent stated as none each leave the first check as the only one.
+  const once = "3 list records were checked against 1 name.";
+  const notConnected = await rerun({ env: {} });
+  net.state.agent = null;
+  const refused = await rerun();
+  net.state.agent = () => agentReply({
+    pages: [{ url: FILING, title: "Synthetic filing", snippet: "Business address: 1 Test Way, Houston, Texas, United States." }],
+    fields: [{ id: "hqCountry", value: "US", sourceUrl: FILING, sourceTitle: "", quote: "Houston, Texas, United States" }],
+  });
+  const otherField = await rerun();
+  net.state.agent = parentAnswer("No parent reported", FILING);
+  const none = await rerun();
+  assert.deepEqual([notConnected, refused, otherField, none].map(result => stepNote(result, "screening")), Array(4).fill(once));
+  assert.deepEqual([notConnected.analysis.status, refused.analysis.status, otherField.auto.hqCountry.value, none.auto.ultimateParent.value], ["not connected", "failed", "US", "No parent reported"]);
+  assert.equal([notConnected, refused, otherField, none].every(result => listRows(result).length === 3 && !("changedAt" in result.screening)), true);
+
+  // A parent that CPI recorded is not asked for, so the answer does not change the names.
+  const recorded = { state: "changed", value: "Synthetic Holding SE", baseline: "n.a.", role: "cpi", at: "2026-11-22T16:00:00.000Z", reason: "The share register names the holding company.", source: { label: "Share register extract", url: "" } };
+  net.state.agent = parentAnswer(LISTED, STORY);
+  const kept = await rerun({ entry: addedVendor(POWER, POWER_SITE, { auto: first.auto, analysis: first.analysis, fields: { ultimateParent: recorded } }) });
+  assert.equal(stepNote(kept, "screening"), "3 list records were checked against 2 names.");
+  assert.deepEqual(["ultimateParent" in kept.auto, kept.screening.value, kept.screening.detail.includes("Names checked: Synthetic Power Corp; Synthetic Holding SE.")], [false, "No match", true]);
+});
+
+test("the dated lists are checked again with the new name, and a screening list that was down is not downloaded again", async () => {
+  const net = network();
+  const { first, entry } = await checkedVendor(net);
+  const rerun = (extra = {}) => analyzeEntry({ kind: "vendor", entry, previousScreening: first.screening, earlier: first.analysis, useAi: true, fetchImpl: net.fetchImpl, env: KEY, now: NOW + DAY_MS, ...extra });
+  // The dated lists are held with the code, so the made-up answer names a company that both lists carry.
+  const onLists = "Huawei Technologies Co., Ltd.";
+  const registered = { id: "legalName", value: "Synthetic Power Corporation", sourceUrl: FILING, sourceTitle: "", quote: "Its registered name is Synthetic Power Corporation." };
+
+  net.state.agent = parentAnswer(onLists, STORY);
+  net.state.down.add("data.trade.gov");
+  clearScreeningCache();
+  const before = listDownloads(net);
+  const down = await rerun();
+  assert.deepEqual(steps(down), [["registry", "read"], ["sec", "not needed"], ["lists", "read"], ["screening", "unavailable"], ["ai", "read"]]);
+  assert.equal(stepNote(down, "screening"), "The source returned status 503. The new ultimate parent was not screened in this run. The next check screens it.");
+  assert.equal(stepNote(down, "lists").endsWith(`2026. ${RAN_AGAIN}`), true);
+  assert.equal(listDownloads(net) - before, 1);
+  // The earlier screening result stands. The dated lists hold the result for the new name, dated as a change.
+  assert.deepEqual([down.screening, "screening" in down.auto], [null, false]);
+  assert.deepEqual(listRows(down), [
+    ["fccCovered", "Named producer", true, "The list check changed from Not named."],
+    ["section1260h", "Listed", true, "The list check changed from Not listed."],
+  ]);
+  assert.deepEqual([down.auto.fccCovered.changedFrom, down.auto.fccCovered.changedAt, down.auto.section1260h.changedFrom], ["Not named", "2026-11-23T15:00:00.000Z", "Not listed"]);
+
+  // A legal name on a maker page is on both lists. A filing replaces it in the same run, so no list result rests on it afterward.
+  const custom = { name: POWER, names: [POWER], domain: POWER_SITE, asOf: "2026-11-22", fields: { legalName: [onLists, "Synthetic maker page", `https://www.${POWER_SITE}/about`, 4, ""] } };
+  const misnamed = addedVendor(POWER, POWER_SITE, { custom, auto: first.auto, analysis: first.analysis });
+  net.state.agent = parentAnswer("Synthetic Capital Partners", FILING, [registered]);
+  const both = "legal name and ultimate parent";
+  const stillDown = await rerun({ entry: misnamed });
+  assert.equal(stepNote(stillDown, "screening"), `The source returned status 503. The new ${both} were not screened in this run. The next check screens them.`);
+  net.state.down.delete("data.trade.gov");
+  clearScreeningCache();
+  const renamed = await rerun({ entry: misnamed });
+  assert.deepEqual([renamed.auto.legalName.value, renamed.auto.legalName.tier, renamed.auto.ultimateParent.value], ["Synthetic Power Corporation", 1, "Synthetic Capital Partners"]);
+  assert.equal(stepNote(renamed, "screening"), `3 list records were checked against 3 names. The check ran again with the ${both} that the AI analysis recorded.`);
+  assert.deepEqual(listRows(renamed), [
+    ["fccCovered", "Not named", false, "The list check agrees with the recorded value."],
+    ["section1260h", "Not listed", false, "The list check agrees with the recorded value."],
+    ["screening", "No match", false, "The result is unchanged. The check date is refreshed."],
+  ]);
+  assert.deepEqual(["fccCovered" in renamed.auto, "section1260h" in renamed.auto], [false, false]);
+  assert.equal(renamed.screening.detail, "No name match. A clear result is not an approval. Names checked: Synthetic Power Corp; Synthetic Power Corporation; Synthetic Capital Partners. List data retrieved November 23, 2026.");
+  noLongDash([down, stillDown, renamed]);
+});
+
 test("a part is read against the design criteria, and a reading without a retrieved page is shown as not published", async () => {
   const net = network();
   const catalog = mergeCatalog(syntheticSeed(), []);

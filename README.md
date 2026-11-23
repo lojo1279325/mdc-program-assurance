@@ -58,6 +58,8 @@ The first check of a vendor or a part fills what these public sources state, in 
 3. The Global Legal Entity Identifier registry and the SEC company list.
 4. The Perplexity Agent API, when a key is set. It may report only what a public page states, with the page address and a short quote. It prefers US government pages, then regulators and registries, then standards bodies, then the maker.
 
+When the Agent API records a new legal name or a new ultimate parent, the same analysis checks the screening list, the FCC Covered List, and the Section 1260H list again with that name. A changed result is dated once, the vendor is flagged for recheck, and the daily update reports the change. When the screening list could not be read earlier in that analysis, the analysis says the new name was not screened, and the next check screens it.
+
 Every value from these sources starts as unconfirmed. The owning role confirms it or changes it with a reason. A value that a role recorded stays on the record until that role rechecks it.
 
 ### Daily check

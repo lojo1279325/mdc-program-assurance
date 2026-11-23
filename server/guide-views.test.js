@@ -153,6 +153,51 @@ test("a change in the list records behind an unchanged result is stated in the u
   assert.equal(rechecks.includes("Screening list result is still Match, and the list records behind it changed. Trade has not confirmed it since. (Trade)"), true);
 });
 
+test("a screening change that an analysis dated is reported like a change that a check found", () => {
+  // The analysis keeps the change in the vendor's history. The check that follows finds nothing new for the vendor.
+  const note = "Filled or refreshed from cited sources: Screening list result, Ultimate parent.";
+  const analyzed = (hours, screening, extra = {}) => ({
+    kind: "catalog-vendor", key: "syn-us", version: 1,
+    payload: { ...extra, log: [{ at: at(hours), role: "trade", field: "", action: "analyze", note, ...(screening ? { screening } : {}) }] },
+  });
+  const nowMatch = listed(3)["vendor:syn-us"];
+  const toMatch = { from: "No match", to: "Match", fromDetail: "No name match. A clear result is not an approval.", fromLists: [] };
+  const digestFor = (documents, runs = [check(2)]) => digestOf({ watch: { runs, items: [], reviews: [] }, catalog: mergeCatalog(syntheticSeed(), documents), projectName: "MDC" });
+  const changedLine = "The screening result changed for Synthetic Power Corp (from No match to Match). Trade confirms each one before it is relied on.";
+
+  const digest = digestFor([analyzed(3, toMatch, { auto: nowMatch })]);
+  assert.deepEqual(kinds(digest), ["check", "items", "screening", "posture"]);
+  assert.equal(bullet(digest, "screening"), changedLine);
+  assert.deepEqual(digest.postures.map(row => [row.id, row.from, row.to]), POWER_PARTS.map((id, index) => [id, ["Yellow", "Yellow", "Yellow", "Green", "Yellow"][index], "Orange"]));
+  assert.deepEqual([digest.counts.runs, digest.counts.screeningChanges, digest.counts.recordChanges, digest.counts.postureChanges, digest.action], [1, 1, 0, 5, true]);
+  // The change is reported when no check ran after the analysis.
+  assert.equal(bullet(digestFor([analyzed(3, toMatch, { auto: nowMatch })], []), "screening"), changedLine);
+
+  // A later check on a practice copy finds the same change again. The update states it once.
+  const twice = digestFor([analyzed(3, toMatch, { auto: nowMatch })], [check(1, [change("No match", "Match")])]);
+  assert.deepEqual([bullet(twice, "screening"), twice.counts.screeningChanges, twice.counts.postureChanges], [changedLine, 1, 5]);
+  // A check and a later analysis are read in time order, from the first result to the last.
+  const stepped = digestFor([analyzed(2, { ...toMatch, from: "Similar name" }, { auto: nowMatch })], [check(1), check(5, [change("No match", "Similar name")])]);
+  assert.equal(bullet(stepped, "screening"), changedLine);
+
+  // The list records changed behind an unchanged match.
+  const records = { from: "Match", to: "Match", fromDetail: "Name match on Entity List (EL) (Synthetic Power Corp).", fromLists: ["Entity List (EL)"] };
+  const behind = digestFor([analyzed(3, records, { auto: { screening: { ...nowMatch.screening, changedFrom: "Match" } } })]);
+  assert.equal(bullet(behind, "screening"), "The list records behind the result changed for Synthetic Power Corp (still Match). Trade confirms each one before it is relied on.");
+  assert.deepEqual([behind.counts.screeningChanges, behind.counts.recordChanges, behind.action], [0, 1, true]);
+
+  // The earlier result is benchmarked on the lists that the analysis kept for it.
+  const cleared = { screening: { value: "No match", source: CSL, tier: 1, asOf: "2026-11-22", detail: "No name match.", lists: [], checkedAt: at(3), signature: "sig-2", changedAt: at(3), changedFrom: "Match" } };
+  const confirmed = { screening: { state: "confirmed", baseline: "Match", role: "trade", at: at(30) } };
+  const left = { from: "Match", to: "No match", fromDetail: "Name match on Capta List (CAP) (Synthetic Power Corp).", fromLists: ["Specially Designated Nationals (SDN)", "Entity List (EL)"] };
+  assert.deepEqual(digestFor([analyzed(3, left, { auto: cleared, fields: confirmed })]).postures.map(row => [row.id, row.from, row.to]), POWER_PARTS.map((id, index) => [id, "Red", ["Yellow", "Yellow", "Yellow", "Green", "Yellow"][index]]));
+
+  // An analysis that dated no change, or one older than 24 hours, adds nothing.
+  assert.equal(bullet(digestFor([analyzed(3, null)]), "screening"), "No vendor screening result changed.");
+  const old = digestFor([analyzed(30, toMatch, { auto: nowMatch })]);
+  assert.deepEqual([bullet(old, "screening"), old.counts.screeningChanges, old.postures], ["No vendor screening result changed.", 0, []]);
+});
+
 test("a long watch list is shown a page at a time, and every item can be reached", () => {
   const id = (index) => `item-${String(index).padStart(3, "0")}`;
   // 150 items, newest first. Every third item is an advisory for CPI. Trade has decided each of the other 100.

@@ -251,7 +251,7 @@ export function drawAnalysis(entry, ctx) {
   const canRun = ["nstt", "cpi", "trade"].includes(ctx.role);
   const running = ctx.analyzing === `${entry.kind}:${entry.id}`;
   const scope = entry.kind === "vendor"
-    ? "It checks the US Consolidated Screening List, the FCC Covered List, the Section 1260H list, the legal entity registry, and the SEC registrant list. The AI step then looks for the facts that are still open and cites the page for each one."
+    ? "It checks the US Consolidated Screening List, the FCC Covered List, the Section 1260H list, the legal entity registry, and the SEC registrant list. The AI step then looks for the facts that are still open and cites the page for each one. A legal name or a parent that the AI step records is checked against the lists in the same run."
     : "It applies the program rules for this part type. The AI step then reads the maker's published data for the rating, frequency, standards, and assembly country, and gives a reading for each fit criterion with the page it relied on.";
   return `<section class="analysis" aria-live="polite">
     <div class="section-heading"><h3>Fact-based analysis</h3>${canRun ? `<button type="button" class="primary" data-analyze="${esc(entry.id)}" ${running ? "disabled" : ""}>${running ? "Analysis running" : analysis ? "Run the analysis again" : "Run the analysis"}</button>` : ""}</div>
@@ -401,16 +401,23 @@ export function dailyDigest({ watch = null, catalog = null, lines = [], projectN
   const runs = allRuns.filter(run => within(run.at));
   const items = (watch?.items || []).filter(item => within(item.foundAt));
   const leads = items.filter(item => item.lead).length;
-  const changed = new Map();
-  for (const run of [...runs].reverse()) {
-    for (const row of run.screening?.changed || []) {
-      const first = changed.get(row.id);
-      // The earlier result is the one the first change of the day started from. The last change says whether the value moved.
-      changed.set(row.id, {
-        id: row.id, name: row.name, from: first?.from ?? row.from, fromDetail: first ? first.fromDetail : row.fromDetail || "",
-        fromLists: first ? first.fromLists : row.fromLists, to: row.to, records: row.from === row.to,
-      });
+  // A screening change is dated by a check or by an analysis of the vendor. Both are read here, oldest first.
+  const moves = [];
+  for (const run of runs) for (const row of run.screening?.changed || []) moves.push({ ...row, at: run.at });
+  for (const vendor of catalog?.vendors || []) {
+    for (const entry of vendor.log || []) {
+      if (entry?.action === "analyze" && entry.screening && within(entry.at)) moves.push({ ...entry.screening, id: vendor.id, name: vendor.name, at: entry.at });
     }
+  }
+  moves.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  const changed = new Map();
+  for (const row of moves) {
+    const first = changed.get(row.id);
+    // The earlier result is the one the first change of the day started from. The last change says whether the value moved.
+    changed.set(row.id, {
+      id: row.id, name: row.name, from: first?.from ?? row.from, fromDetail: first ? first.fromDetail : row.fromDetail || "",
+      fromLists: first ? first.fromLists : row.fromLists, to: row.to, records: row.from === row.to,
+    });
   }
   const screening = [...changed.values()].filter(row => row.from !== row.to);
   // A check can find the same value resting on other list records. The value did not move, and Trade still has a change to confirm.

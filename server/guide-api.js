@@ -17,7 +17,7 @@ import {
 } from "../public/guide-model.js";
 import { currentEnvironment, designatedAdministrators } from "./policy.js";
 import { PRACTICE_PROJECT, practiceActor, practiceRoleFrom } from "./practice.js";
-import { analyzeEntry, dayOf, hostOf, inverterAuto, longDate, screeningAuto, tierForUrl } from "./analysis.js";
+import { analyzeEntry, dayOf, hostOf, inverterAuto, longDate, screeningAuto, screeningChange, tierForUrl } from "./analysis.js";
 import {
   CATALOG_PARTITION, NOT_CONNECTED, PRACTICE_CATALOG_PARTITION, PRACTICE_WATCH_PARTITION, SYSTEM_ACTOR, WATCH_PARTITION,
   WATCH_SOURCES, flattenRuns, itemFromReview, logItems, runWatch, scheduleState,
@@ -520,6 +520,9 @@ export function registerGuideRoutes(app, { store, grantedActor, fetchImpl = (...
     const record = {
       at: result.analysis.at, by: acting.email, role: acting.role, field: "", action: "analyze",
       note: `${applied.length ? `Filled or refreshed from cited sources: ${applied.join(", ")}.` : "No field changed."}${result.analysis.status === "complete" ? "" : result.analysis.status === "not connected" ? " The AI step is not connected." : " The AI step did not complete."}`,
+      // A screening change that this analysis dated is kept with what it started from. The next daily check finds
+      // nothing new for this vendor, so the daily update reads the change from this entry.
+      ...(result.screening?.changedAt === result.analysis.at ? { screening: screeningChange(result.screening, previous, entry.fields?.screening) } : {}),
     };
     // The analysis adds sourced values and its own record. It never touches what a role confirmed or changed.
     const merge = (current) => {

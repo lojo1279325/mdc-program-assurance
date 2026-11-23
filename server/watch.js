@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { CATALOG_SEED } from "../public/catalog-seed.js";
 import { mergeCatalog, classifyTopics, vendorsNamed, vendorsNamedClearly, entityNames, clean, safeUrl } from "../public/catalog-model.js";
-import { USER_AGENT, longDate, plain, urlKey, loadScreeningIndex, screenVendor, screeningRecord } from "./analysis.js";
+import { USER_AGENT, longDate, plain, urlKey, loadScreeningIndex, screenVendor, screeningRecord, screeningChange } from "./analysis.js";
 
 export const WATCH_PARTITION = "*watch";
 export const PRACTICE_WATCH_PARTITION = "*watch-practice";
@@ -156,14 +156,7 @@ async function rescreen({ vendors, practiceVendors, previous, overlays, fetchImp
     const fresh = screenVendor(loaded.index, entityNames(vendor), now);
     const record = screeningRecord(prior, fresh, vendor.fields?.screening?.baselineValue, nowIso);
     // The earlier detail and the earlier list names are kept, so the log can state what the earlier result rested on.
-    // The list names come from the same record as the earlier value. A record kept without them adds none.
-    if (record.changedAt === nowIso) {
-      const lists = prior ? prior.lists : vendor.fields?.screening?.lists;
-      changed.push({
-        id: vendor.id, name: vendor.name, from: record.changedFrom, to: record.value, fromDetail: clean(prior?.detail ?? vendor.fields?.screening?.detail, 300),
-        ...(Array.isArray(lists) ? { fromLists: lists.map(name => clean(name, 160)).filter(Boolean).slice(0, 40) } : {}),
-      });
-    }
+    if (record.changedAt === nowIso) changed.push({ id: vendor.id, name: vendor.name, ...screeningChange(record, prior, vendor.fields?.screening) });
     return record;
   };
   const newest = (a, b) => !a ? b : !b ? a : String(a.checkedAt || "") >= String(b.checkedAt || "") ? a : b;
